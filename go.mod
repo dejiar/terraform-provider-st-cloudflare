@@ -1,6 +1,6 @@
 module github.com/myklst/terraform-provider-st-cloudflare
 
-go 1.26.0
+go 1.26.10
 
 require (
 	github.com/cenkalti/backoff v2.2.1+incompatible
