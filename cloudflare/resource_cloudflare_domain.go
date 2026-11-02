@@ -317,8 +317,8 @@ func (r *cloudflareDomainResource) Schema(_ context.Context, _ resource.SchemaRe
 			},
 			"registrant_contact": &schema.SingleNestedAttribute{
 				MarkdownDescription: "Registrant contact for the registration. When omitted, the account's default " +
-					"address book entry is used; without either, registration fails. Sandbox mode always requires " +
-					"a contact.",
+					"address book entry is used; without either, registration fails. In sandbox mode a built-in " +
+					"placeholder contact is used when omitted.",
 				Optional: true,
 				Attributes: map[string]schema.Attribute{
 					"email": &schema.StringAttribute{
@@ -416,6 +416,12 @@ func (r *cloudflareDomainResource) Create(ctx context.Context, req resource.Crea
 	}
 	if !plan.PurchaseYears.IsNull() {
 		opts.years = plan.PurchaseYears.ValueInt64()
+	}
+	// Sandbox registrations are simulations: fill a placeholder contact when
+	// none is given so sandbox configs stay minimal. Production keeps the
+	// account address book fallback and errors when neither is available.
+	if opts.contact == nil && plan.UseSandbox.ValueBool() {
+		opts.contact = sandboxPlaceholderContact()
 	}
 
 	tflog.Info(ctx, fmt.Sprintf("Domain [%s] is registering...", domain))
@@ -675,6 +681,22 @@ func privacyModeOf(privacy bool) string {
 		return "redaction"
 	}
 	return "off"
+}
+
+// sandboxPlaceholderContact returns a format-valid, obviously fake contact
+// used when a sandbox registration omits registrant_contact.
+func sandboxPlaceholderContact() *registrantContactModel {
+	str := types.StringValue
+	return &registrantContactModel{
+		Email:       str("registrant@example.com"),
+		Phone:       str("+1.5555555555"),
+		Name:        str("Sandbox Registrant"),
+		Street:      str("1 Sandbox Street"),
+		City:        str("Austin"),
+		State:       str("TX"),
+		PostalCode:  str("78701"),
+		CountryCode: str("US"),
+	}
 }
 
 func registrationOf(domainName string, autoRenew bool, expiresAt time.Time, status string) registrationView {
