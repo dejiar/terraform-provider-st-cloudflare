@@ -77,12 +77,12 @@ func (r *zoneTypeResource) Configure(ctx context.Context, req resource.Configure
 	if req.ProviderData == nil {
 		return
 	}
-	client, ok := req.ProviderData.(*cloudflare.Client)
+	clients, ok := req.ProviderData.(*providerClients)
 	if !ok {
-		resp.Diagnostics.AddError("req.ProviderData isn't a namecheap.Client", "")
+		resp.Diagnostics.AddError("req.ProviderData isn't a *providerClients", "")
 		return
 	}
-	r.client = client
+	r.client = clients.cloudflare
 }
 
 func (r *zoneTypeResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {

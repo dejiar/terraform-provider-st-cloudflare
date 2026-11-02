@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"regexp"
+	"strconv"
 
 	"github.com/cloudflare/cloudflare-go/v4"
 	"github.com/cloudflare/cloudflare-go/v4/option"
@@ -15,6 +16,8 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
+
+	"github.com/myklst/terraform-provider-st-cloudflare/cloudflare/sdk"
 )
 
 // Ensure the implementation satisfies the expected interfaces
@@ -24,10 +27,19 @@ var (
 
 type cloudflareProvider struct{}
 
+// providerClients bundles the API clients handed to resources and data
+// sources: the cloudflare-go client and the Registrar REST client.
+type providerClients struct {
+	cloudflare *cloudflare.Client
+	registrar  *sdk.Client
+}
+
 type cloudflareProviderModel struct {
-	Email    types.String `tfsdk:"email" json:"email"`
-	APIKey   types.String `tfsdk:"api_key" json:"api_key"`
-	APIToken types.String `tfsdk:"api_token" json:"api_token"`
+	Email      types.String `tfsdk:"email" json:"email"`
+	APIKey     types.String `tfsdk:"api_key" json:"api_key"`
+	APIToken   types.String `tfsdk:"api_token" json:"api_token"`
+	AccountID  types.String `tfsdk:"account_id" json:"account_id"`
+	UseSandbox types.Bool   `tfsdk:"use_sandbox" json:"use_sandbox"`
 }
 
 // New is a helper function to simplify provider server
@@ -78,6 +90,17 @@ func (p *cloudflareProvider) Schema(_ context.Context, _ provider.SchemaRequest,
 					),
 				},
 			},
+			"account_id": schema.StringAttribute{
+				Description: "The Cloudflare account ID for Registrar operations. May also be provided via " +
+					"CLOUDFLARE_ACCOUNT_ID environment variable. Required by the `st-cloudflare_domain` resource.",
+				Optional: true,
+			},
+			"use_sandbox": schema.BoolAttribute{
+				Description: "Whether to use the Registrar Sandbox endpoints for domain registrations, which " +
+					"allow free test registrations (`.com`/`.net` only) without real domains or billing. " +
+					"May also be provided via CLOUDFLARE_USE_SANDBOX environment variable.",
+				Optional: true,
+			},
 		},
 	}
 }
@@ -93,7 +116,7 @@ func (p *cloudflareProvider) Configure(ctx context.Context, req provider.Configu
 
 	// Default values to environment variables, but override
 	// with Terraform configuration value if set.
-	var email, apiKey, apiToken string
+	var email, apiKey, apiToken, accountID string
 	if !config.Email.IsNull() {
 		email = config.Email.ValueString()
 	} else {
@@ -110,6 +133,30 @@ func (p *cloudflareProvider) Configure(ctx context.Context, req provider.Configu
 		apiToken = config.APIToken.ValueString()
 	} else {
 		apiToken = os.Getenv("CLOUDFLARE_API_TOKEN")
+	}
+
+	if !config.AccountID.IsNull() {
+		accountID = config.AccountID.ValueString()
+	} else {
+		accountID = os.Getenv("CLOUDFLARE_ACCOUNT_ID")
+	}
+
+	var useSandbox bool
+	if !config.UseSandbox.IsNull() {
+		useSandbox = config.UseSandbox.ValueBool()
+	} else if v := os.Getenv("CLOUDFLARE_USE_SANDBOX"); v != "" {
+		parsed, err := strconv.ParseBool(v)
+		if err != nil {
+			resp.Diagnostics.AddAttributeError(
+				path.Root("use_sandbox"),
+				"Invalid Cloudflare use_sandbox",
+				"The provider cannot create the Registrar client as there is an invalid value for the "+
+					"CLOUDFLARE_USE_SANDBOX environment variable. Set the use_sandbox value in the configuration "+
+					"or fix the environment variable to a valid boolean.",
+			)
+			return
+		}
+		useSandbox = parsed
 	}
 
 	// API Token or both email and API Key have to be set, return
@@ -155,8 +202,13 @@ func (p *cloudflareProvider) Configure(ctx context.Context, req provider.Configu
 		)
 	}
 
-	resp.DataSourceData = client
-	resp.ResourceData = client
+	clients := &providerClients{
+		cloudflare: client,
+		registrar:  sdk.NewClient(apiToken, accountID, useSandbox),
+	}
+
+	resp.DataSourceData = clients
+	resp.ResourceData = clients
 }
 
 func (p *cloudflareProvider) DataSources(_ context.Context) []func() datasource.DataSource {
@@ -166,5 +218,6 @@ func (p *cloudflareProvider) DataSources(_ context.Context) []func() datasource.
 func (p *cloudflareProvider) Resources(_ context.Context) []func() resource.Resource {
 	return []func() resource.Resource{
 		NewZoneTypeResource,
+		NewCloudflareDomainResource,
 	}
 }
