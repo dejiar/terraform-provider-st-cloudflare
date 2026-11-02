@@ -32,3 +32,4 @@ override.tf.json
 # example: *tfplan*
 
 .vscode/
+terraform-provider-st-cloudflare

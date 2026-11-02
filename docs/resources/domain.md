@@ -10,12 +10,13 @@ description: |-
 
 Register a domain through the Cloudflare Registrar. Registration goes through the Registrar Registrations API via the official cloudflare-go SDK; when the provider `use_sandbox` flag is set, the resource targets the Registrar Sandbox endpoints instead, which allow free test registrations (`.com`/`.net` only) without real domains or billing.
 
-Requires the provider `api_token` and `account_id`.
+Requires the provider `api_token`; the `account_id` is set on the resource.
 
 ## Example Usage
 
 ```terraform
 resource "st-cloudflare_domain" "example_domain" {
+  account_id = "023e105f4ecef8ad9ca31a8372d0c353"
   domain     = "example.com"
   auto_renew = true
   privacy    = true
@@ -38,6 +39,7 @@ resource "st-cloudflare_domain" "example_domain" {
 
 ### Required
 
+- `account_id` (String) The Cloudflare account ID that owns the registration. Changing this registers the domain under a different account (forces replacement).
 - `auto_renew` (Boolean) Whether the domain is automatically renewed before expiration. Setting `true` authorizes Cloudflare to charge the account's default payment method up to 30 days before expiry.
 - `domain` (String) Domain name to register (FQDN, e.g. `example.com`).
 - `privacy` (Boolean) WHOIS privacy: `true` requests redaction, `false` disables it. Cannot be changed after registration.
@@ -76,3 +78,4 @@ Optional:
 - **Updates**: the Cloudflare Registrar API supports updating `auto_renew` only. Changing `purchase_years`, `privacy`, or `registrant_contact` after creation produces an explicit error.
 - **Delete**: domain registrations cannot be deleted in Cloudflare; `terraform destroy` only removes the resource from state and logs a warning. The domain stays registered — disable `auto_renew` to stop renewal charges.
 - **Sandbox**: `use_sandbox = true` registers against `/registrar-sandbox/` — no billing, no real domains, `.com`/`.net` only, and sandbox purchases are persisted (a name bought there is not re-buyable in the sandbox).
+- **Import**: `terraform import st-cloudflare_domain.example_domain <account_id>/<domain>` — the account ID is needed to locate the registration.

@@ -27,11 +27,10 @@ type cloudflareProvider struct{}
 
 // providerClients bundles the shared cloudflare-go client and the provider
 // settings handed to resources and data sources. The domain resource uses
-// accountID and useSandbox to pick the Registrar or Registrar Sandbox
-// service.
+// useSandbox to pick the Registrar or Registrar Sandbox service and carries
+// its own account_id.
 type providerClients struct {
 	cloudflare *cloudflare.Client
-	accountID  string
 	useSandbox bool
 }
 
@@ -39,7 +38,6 @@ type cloudflareProviderModel struct {
 	Email      types.String `tfsdk:"email" json:"email"`
 	APIKey     types.String `tfsdk:"api_key" json:"api_key"`
 	APIToken   types.String `tfsdk:"api_token" json:"api_token"`
-	AccountID  types.String `tfsdk:"account_id" json:"account_id"`
 	UseSandbox types.Bool   `tfsdk:"use_sandbox" json:"use_sandbox"`
 }
 
@@ -91,11 +89,6 @@ func (p *cloudflareProvider) Schema(_ context.Context, _ provider.SchemaRequest,
 					),
 				},
 			},
-			"account_id": schema.StringAttribute{
-				Description: "The Cloudflare account ID for Registrar operations. May also be provided via " +
-					"CLOUDFLARE_ACCOUNT_ID environment variable. Required by the `st-cloudflare_domain` resource.",
-				Optional: true,
-			},
 			"use_sandbox": schema.BoolAttribute{
 				Description: "Whether to use the Registrar Sandbox endpoints for domain registrations, which " +
 					"allow free test registrations (`.com`/`.net` only) without real domains or billing. " +
@@ -117,7 +110,7 @@ func (p *cloudflareProvider) Configure(ctx context.Context, req provider.Configu
 
 	// Default values to environment variables, but override
 	// with Terraform configuration value if set.
-	var email, apiKey, apiToken, accountID string
+	var email, apiKey, apiToken string
 	if !config.Email.IsNull() {
 		email = config.Email.ValueString()
 	} else {
@@ -134,12 +127,6 @@ func (p *cloudflareProvider) Configure(ctx context.Context, req provider.Configu
 		apiToken = config.APIToken.ValueString()
 	} else {
 		apiToken = os.Getenv("CLOUDFLARE_API_TOKEN")
-	}
-
-	if !config.AccountID.IsNull() {
-		accountID = config.AccountID.ValueString()
-	} else {
-		accountID = os.Getenv("CLOUDFLARE_ACCOUNT_ID")
 	}
 
 	var useSandbox bool
@@ -205,7 +192,6 @@ func (p *cloudflareProvider) Configure(ctx context.Context, req provider.Configu
 
 	clients := &providerClients{
 		cloudflare: client,
-		accountID:  accountID,
 		useSandbox: useSandbox,
 	}
 

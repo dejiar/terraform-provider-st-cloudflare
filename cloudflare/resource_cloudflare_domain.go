@@ -28,7 +28,17 @@ const (
 )
 
 type cloudflareDomainResource struct {
-	registrar registrarService
+	client     *cloudflare.Client
+	useSandbox bool
+}
+
+// registrarFor builds the registrar service for one account: production
+// Registrar or Registrar Sandbox, per the provider use_sandbox flag.
+func (r *cloudflareDomainResource) registrarFor(accountID string) registrarService {
+	if r.useSandbox {
+		return &sandboxRegistrar{client: r.client, accountID: accountID}
+	}
+	return &productionRegistrar{client: r.client, accountID: accountID}
 }
 
 func NewCloudflareDomainResource() resource.Resource {
@@ -49,6 +59,7 @@ type registrantContactModel struct {
 }
 
 type cloudflareDomainModel struct {
+	AccountID         types.String            `tfsdk:"account_id"`
 	Domain            types.String            `tfsdk:"domain"`
 	PurchaseYears     types.Int64             `tfsdk:"purchase_years"`
 	AutoRenew         types.Bool              `tfsdk:"auto_renew"`
@@ -253,10 +264,18 @@ func (r *cloudflareDomainResource) Metadata(_ context.Context, req resource.Meta
 // Schema
 func (r *cloudflareDomainResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *resource.SchemaResponse) {
 	resp.Schema = schema.Schema{
-		Description: "Register a domain through the Cloudflare Registrar. Requires the provider `account_id` and " +
-			"`api_token`. When the provider `use_sandbox` flag is set, the resource targets the Registrar Sandbox " +
-			"endpoints (free test registrations, `.com`/`.net` only).",
+		Description: "Register a domain through the Cloudflare Registrar. Requires the provider `api_token`. " +
+			"When the provider `use_sandbox` flag is set, the resource targets the Registrar Sandbox endpoints " +
+			"(free test registrations, `.com`/`.net` only).",
 		Attributes: map[string]schema.Attribute{
+			"account_id": &schema.StringAttribute{
+				MarkdownDescription: "The Cloudflare account ID that owns the registration. Changing this registers " +
+					"the domain under a different account (forces replacement).",
+				Required: true,
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.RequiresReplace(),
+				},
+			},
 			"domain": &schema.StringAttribute{
 				MarkdownDescription: "Domain name to register (FQDN, e.g. `example.com`).",
 				Required:            true,
@@ -344,8 +363,8 @@ func (r *cloudflareDomainResource) Schema(_ context.Context, _ resource.SchemaRe
 	}
 }
 
-// Configure picks the production or sandbox registrar service based on the
-// provider configuration.
+// Configure stores the shared cloudflare-go client and sandbox flag; the
+// account_id comes from each resource instance.
 func (r *cloudflareDomainResource) Configure(_ context.Context, req resource.ConfigureRequest, resp *resource.ConfigureResponse) {
 	if req.ProviderData == nil {
 		// this data available on apply stage
@@ -356,11 +375,8 @@ func (r *cloudflareDomainResource) Configure(_ context.Context, req resource.Con
 		resp.Diagnostics.AddError("req.ProviderData isn't a *providerClients", "")
 		return
 	}
-	if clients.useSandbox {
-		r.registrar = &sandboxRegistrar{client: clients.cloudflare, accountID: clients.accountID}
-	} else {
-		r.registrar = &productionRegistrar{client: clients.cloudflare, accountID: clients.accountID}
-	}
+	r.client = clients.cloudflare
+	r.useSandbox = clients.useSandbox
 }
 
 // Create
@@ -377,6 +393,8 @@ func (r *cloudflareDomainResource) Create(ctx context.Context, req resource.Crea
 		return
 	}
 
+	accountID := plan.AccountID.ValueString()
+	svc := r.registrarFor(accountID)
 	domain := plan.Domain.ValueString()
 	opts := createRegistrationOptions{
 		domainName: domain,
@@ -389,18 +407,18 @@ func (r *cloudflareDomainResource) Create(ctx context.Context, req resource.Crea
 	}
 
 	tflog.Info(ctx, fmt.Sprintf("Domain [%s] is registering...", domain))
-	workflow, err := r.registrar.CreateRegistration(ctx, opts)
+	workflow, err := svc.CreateRegistration(ctx, opts)
 	if err != nil {
 		resp.Diagnostics.Append(diagnosticErrorOf(err, "register domain [%s] failed", domain))
 		return
 	}
 
-	if _, err := waitRegistrationWorkflow(ctx, r.registrar, domain, workflow, domainRegistrationTimeout); err != nil {
+	if _, err := waitRegistrationWorkflow(ctx, svc, domain, workflow, domainRegistrationTimeout); err != nil {
 		resp.Diagnostics.Append(diagnosticErrorOf(err, "register domain [%s] failed", domain))
 		return
 	}
 
-	registration, err := r.registrar.GetRegistration(ctx, domain)
+	registration, err := svc.GetRegistration(ctx, domain)
 	if err != nil {
 		resp.Diagnostics.Append(diagnosticErrorOf(err, "fetch registration for domain [%s] failed", domain))
 		return
@@ -408,6 +426,7 @@ func (r *cloudflareDomainResource) Create(ctx context.Context, req resource.Crea
 	tflog.Info(ctx, fmt.Sprintf("Domain [%s] registered, expires at [%s]", domain, registration.expiresAt))
 
 	state := cloudflareDomainModel{
+		AccountID:         plan.AccountID,
 		Domain:            plan.Domain,
 		PurchaseYears:     plan.PurchaseYears,
 		AutoRenew:         plan.AutoRenew,
@@ -433,8 +452,10 @@ func (r *cloudflareDomainResource) Read(ctx context.Context, req resource.ReadRe
 		return
 	}
 
+	accountID := state.AccountID.ValueString()
+	svc := r.registrarFor(accountID)
 	domain := state.Domain.ValueString()
-	registration, err := r.registrar.GetRegistration(ctx, domain)
+	registration, err := svc.GetRegistration(ctx, domain)
 	if err != nil {
 		var apiErr *cloudflare.Error
 		if errors.As(err, &apiErr) && apiErr.StatusCode == 404 {
@@ -472,6 +493,8 @@ func (r *cloudflareDomainResource) Update(ctx context.Context, req resource.Upda
 		return
 	}
 
+	accountID := plan.AccountID.ValueString()
+	svc := r.registrarFor(accountID)
 	domain := plan.Domain.ValueString()
 
 	// The Registrar API supports updating auto_renew only; everything else is
@@ -497,24 +520,25 @@ func (r *cloudflareDomainResource) Update(ctx context.Context, req resource.Upda
 
 	if !plan.AutoRenew.Equal(state.AutoRenew) {
 		tflog.Info(ctx, fmt.Sprintf("Domain [%s] auto_renew update to [%t]...", domain, plan.AutoRenew.ValueBool()))
-		workflow, err := r.registrar.EditRegistration(ctx, domain, plan.AutoRenew.ValueBool())
+		workflow, err := svc.EditRegistration(ctx, domain, plan.AutoRenew.ValueBool())
 		if err != nil {
 			resp.Diagnostics.Append(diagnosticErrorOf(err, "update domain [%s] failed", domain))
 			return
 		}
-		if _, err := waitRegistrationWorkflow(ctx, r.registrar, domain, workflow, domainUpdateTimeout); err != nil {
+		if _, err := waitRegistrationWorkflow(ctx, svc, domain, workflow, domainUpdateTimeout); err != nil {
 			resp.Diagnostics.Append(diagnosticErrorOf(err, "update domain [%s] failed", domain))
 			return
 		}
 	}
 
-	registration, err := r.registrar.GetRegistration(ctx, domain)
+	registration, err := svc.GetRegistration(ctx, domain)
 	if err != nil {
 		resp.Diagnostics.Append(diagnosticErrorOf(err, "fetch registration for domain [%s] failed", domain))
 		return
 	}
 
 	newState := cloudflareDomainModel{
+		AccountID:         plan.AccountID,
 		Domain:            plan.Domain,
 		PurchaseYears:     plan.PurchaseYears,
 		AutoRenew:         types.BoolValue(registration.autoRenew),
@@ -548,9 +572,18 @@ func (r *cloudflareDomainResource) Delete(ctx context.Context, req resource.Dele
 	tflog.Warn(ctx, msg)
 }
 
-// ImportState
+// ImportState expects the ID in the format <account_id>/<domain>.
 func (r *cloudflareDomainResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
-	resource.ImportStatePassthroughID(ctx, path.Root("domain"), req, resp)
+	parts := strings.SplitN(req.ID, "/", 2)
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		resp.Diagnostics.AddError(
+			"Invalid import ID",
+			fmt.Sprintf("Expected import ID in the format <account_id>/<domain>, got: %s", req.ID),
+		)
+		return
+	}
+	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("account_id"), parts[0])...)
+	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("domain"), parts[1])...)
 }
 
 // waitRegistrationWorkflow polls the registration status until the workflow
@@ -593,8 +626,8 @@ func waitRegistrationWorkflow(ctx context.Context, svc registrarService, domain 
 }
 
 func (r *cloudflareDomainResource) validateRegistrar() error {
-	if r.registrar == nil {
-		return fmt.Errorf("registrar service is not configured")
+	if r.client == nil {
+		return fmt.Errorf("provider client is not configured")
 	}
 	return nil
 }
