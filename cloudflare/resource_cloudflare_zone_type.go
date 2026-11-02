@@ -6,9 +6,9 @@ import (
 	"time"
 
 	"github.com/cenkalti/backoff"
-	"github.com/cloudflare/cloudflare-go/v4"
-	"github.com/cloudflare/cloudflare-go/v4/shared"
-	"github.com/cloudflare/cloudflare-go/v4/zones"
+	"github.com/cloudflare/cloudflare-go/v7"
+	"github.com/cloudflare/cloudflare-go/v7/shared"
+	"github.com/cloudflare/cloudflare-go/v7/zones"
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
@@ -193,8 +193,8 @@ func (r *zoneTypeResource) Delete(ctx context.Context, req resource.DeleteReques
 
 	_, err = r.client.Zones.Subscriptions.New(
 		context.TODO(),
-		zoneId,
 		zones.SubscriptionNewParams{
+			ZoneID: cloudflare.F(zoneId),
 			Subscription: shared.SubscriptionParam{
 				Frequency: cloudflare.F(shared.SubscriptionFrequencyMonthly),
 				RatePlan: cloudflare.F(shared.RatePlanParam{
@@ -217,8 +217,8 @@ func (r *zoneTypeResource) updateZoneType(zoneId string, zonePlan string, zoneTy
 	getDomainExpiryInfo := func() error {
 		_, err = r.client.Zones.Subscriptions.New(
 			context.TODO(),
-			zoneId,
 			zones.SubscriptionNewParams{
+				ZoneID: cloudflare.F(zoneId),
 				Subscription: shared.SubscriptionParam{
 					Frequency: cloudflare.F(shared.SubscriptionFrequencyMonthly),
 					RatePlan: cloudflare.F(shared.RatePlanParam{

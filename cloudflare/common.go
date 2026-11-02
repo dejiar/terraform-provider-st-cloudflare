@@ -6,8 +6,8 @@ import (
 	"regexp"
 	"strconv"
 
-	"github.com/cloudflare/cloudflare-go/v4"
-	"github.com/cloudflare/cloudflare-go/v4/option"
+	"github.com/cloudflare/cloudflare-go/v7"
+	"github.com/cloudflare/cloudflare-go/v7/option"
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
 	"github.com/hashicorp/terraform-plugin-framework/path"
@@ -16,8 +16,6 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
-
-	"github.com/myklst/terraform-provider-st-cloudflare/cloudflare/sdk"
 )
 
 // Ensure the implementation satisfies the expected interfaces
@@ -27,11 +25,14 @@ var (
 
 type cloudflareProvider struct{}
 
-// providerClients bundles the API clients handed to resources and data
-// sources: the cloudflare-go client and the Registrar REST client.
+// providerClients bundles the shared cloudflare-go client and the provider
+// settings handed to resources and data sources. The domain resource uses
+// accountID and useSandbox to pick the Registrar or Registrar Sandbox
+// service.
 type providerClients struct {
 	cloudflare *cloudflare.Client
-	registrar  *sdk.Client
+	accountID  string
+	useSandbox bool
 }
 
 type cloudflareProviderModel struct {
@@ -204,7 +205,8 @@ func (p *cloudflareProvider) Configure(ctx context.Context, req provider.Configu
 
 	clients := &providerClients{
 		cloudflare: client,
-		registrar:  sdk.NewClient(apiToken, accountID, useSandbox),
+		accountID:  accountID,
+		useSandbox: useSandbox,
 	}
 
 	resp.DataSourceData = clients

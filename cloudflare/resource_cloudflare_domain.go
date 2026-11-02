@@ -2,10 +2,14 @@ package cloudflare
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
 
+	"github.com/cloudflare/cloudflare-go/v7"
+	"github.com/cloudflare/cloudflare-go/v7/registrar"
+	"github.com/cloudflare/cloudflare-go/v7/registrar_sandbox"
 	"github.com/hashicorp/terraform-plugin-framework-validators/int64validator"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
@@ -15,8 +19,6 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-log/tflog"
-
-	"github.com/myklst/terraform-provider-st-cloudflare/cloudflare/sdk"
 )
 
 // Registration and workflow timeouts.
@@ -26,7 +28,7 @@ const (
 )
 
 type cloudflareDomainResource struct {
-	client *sdk.Client
+	registrar registrarService
 }
 
 func NewCloudflareDomainResource() resource.Resource {
@@ -56,6 +58,193 @@ type cloudflareDomainModel struct {
 	Status            types.String            `tfsdk:"status"`
 }
 
+// registrationView is the provider-agnostic view of a domain registration,
+// shared by the production and sandbox registrar services.
+type registrationView struct {
+	domainName string
+	autoRenew  bool
+	expiresAt  string
+	status     string
+}
+
+// workflowView is the provider-agnostic view of an async registrar workflow.
+type workflowView struct {
+	completed bool
+	state     string
+	errCode   string
+	errMsg    string
+}
+
+// createRegistrationOptions carries the resource plan into the registrar
+// adapters.
+type createRegistrationOptions struct {
+	domainName string
+	autoRenew  bool
+	privacy    bool
+	years      int64
+	contact    *registrantContactModel
+}
+
+// registrarService abstracts the production Registrar service and the
+// Registrar Sandbox service behind one shape so the resource code is
+// identical for both.
+type registrarService interface {
+	CreateRegistration(ctx context.Context, opts createRegistrationOptions) (workflowView, error)
+	GetRegistration(ctx context.Context, domainName string) (registrationView, error)
+	EditRegistration(ctx context.Context, domainName string, autoRenew bool) (workflowView, error)
+	GetRegistrationStatus(ctx context.Context, domainName string) (workflowView, error)
+}
+
+// productionRegistrar talks to /accounts/{account_id}/registrar/*.
+type productionRegistrar struct {
+	client    *cloudflare.Client
+	accountID string
+}
+
+func (p *productionRegistrar) CreateRegistration(ctx context.Context, opts createRegistrationOptions) (workflowView, error) {
+	params := registrar.RegistrationNewParams{
+		AccountID:   cloudflare.F(p.accountID),
+		DomainName:  cloudflare.F(opts.domainName),
+		AutoRenew:   cloudflare.F(opts.autoRenew),
+		PrivacyMode: cloudflare.F(registrar.RegistrationNewParamsPrivacyMode(privacyModeOf(opts.privacy))),
+	}
+	if opts.years > 0 {
+		params.Years = cloudflare.F(opts.years)
+	}
+	if opts.contact != nil {
+		c := contactOf(opts.contact)
+		params.Contacts = cloudflare.F(registrar.RegistrationNewParamsContacts{
+			Registrant: cloudflare.F(registrar.RegistrationNewParamsContactsRegistrant{
+				Email: cloudflare.F(c.email),
+				Phone: cloudflare.F(c.phone),
+				Fax:   cloudflare.F(c.fax),
+				PostalInfo: cloudflare.F(registrar.RegistrationNewParamsContactsRegistrantPostalInfo{
+					Address: cloudflare.F(registrar.RegistrationNewParamsContactsRegistrantPostalInfoAddress{
+						Street:      cloudflare.F(c.street),
+						City:        cloudflare.F(c.city),
+						State:       cloudflare.F(c.state),
+						PostalCode:  cloudflare.F(c.postalCode),
+						CountryCode: cloudflare.F(c.countryCode),
+					}),
+					Name:         cloudflare.F(c.name),
+					Organization: cloudflare.F(c.organization),
+				}),
+			}),
+		})
+	}
+	ws, err := p.client.Registrar.Registrations.New(ctx, params)
+	if err != nil {
+		return workflowView{}, err
+	}
+	return workflowView{completed: ws.Completed, state: string(ws.State), errCode: ws.Error.Code, errMsg: ws.Error.Message}, nil
+}
+
+func (p *productionRegistrar) GetRegistration(ctx context.Context, domainName string) (registrationView, error) {
+	reg, err := p.client.Registrar.Registrations.Get(ctx, domainName, registrar.RegistrationGetParams{
+		AccountID: cloudflare.F(p.accountID),
+	})
+	if err != nil {
+		return registrationView{}, err
+	}
+	return registrationOf(reg.DomainName, reg.AutoRenew, reg.ExpiresAt, string(reg.Status)), nil
+}
+
+func (p *productionRegistrar) EditRegistration(ctx context.Context, domainName string, autoRenew bool) (workflowView, error) {
+	ws, err := p.client.Registrar.Registrations.Edit(ctx, domainName, registrar.RegistrationEditParams{
+		AccountID: cloudflare.F(p.accountID),
+		AutoRenew: cloudflare.F(autoRenew),
+	})
+	if err != nil {
+		return workflowView{}, err
+	}
+	return workflowView{completed: ws.Completed, state: string(ws.State), errCode: ws.Error.Code, errMsg: ws.Error.Message}, nil
+}
+
+func (p *productionRegistrar) GetRegistrationStatus(ctx context.Context, domainName string) (workflowView, error) {
+	ws, err := p.client.Registrar.RegistrationStatus.Get(ctx, domainName, registrar.RegistrationStatusGetParams{
+		AccountID: cloudflare.F(p.accountID),
+	})
+	if err != nil {
+		return workflowView{}, err
+	}
+	return workflowView{completed: ws.Completed, state: string(ws.State), errCode: ws.Error.Code, errMsg: ws.Error.Message}, nil
+}
+
+// sandboxRegistrar talks to /accounts/{account_id}/registrar-sandbox/*.
+type sandboxRegistrar struct {
+	client    *cloudflare.Client
+	accountID string
+}
+
+func (s *sandboxRegistrar) CreateRegistration(ctx context.Context, opts createRegistrationOptions) (workflowView, error) {
+	params := registrar_sandbox.RegistrationNewParams{
+		AccountID:   cloudflare.F(s.accountID),
+		DomainName:  cloudflare.F(opts.domainName),
+		AutoRenew:   cloudflare.F(opts.autoRenew),
+		PrivacyMode: cloudflare.F(registrar_sandbox.RegistrationNewParamsPrivacyMode(privacyModeOf(opts.privacy))),
+	}
+	if opts.years > 0 {
+		params.Years = cloudflare.F(opts.years)
+	}
+	if opts.contact != nil {
+		c := contactOf(opts.contact)
+		params.Contacts = cloudflare.F(registrar_sandbox.RegistrationNewParamsContacts{
+			Registrant: cloudflare.F(registrar_sandbox.RegistrationNewParamsContactsRegistrant{
+				Email: cloudflare.F(c.email),
+				Phone: cloudflare.F(c.phone),
+				Fax:   cloudflare.F(c.fax),
+				PostalInfo: cloudflare.F(registrar_sandbox.RegistrationNewParamsContactsRegistrantPostalInfo{
+					Address: cloudflare.F(registrar_sandbox.RegistrationNewParamsContactsRegistrantPostalInfoAddress{
+						Street:      cloudflare.F(c.street),
+						City:        cloudflare.F(c.city),
+						State:       cloudflare.F(c.state),
+						PostalCode:  cloudflare.F(c.postalCode),
+						CountryCode: cloudflare.F(c.countryCode),
+					}),
+					Name:         cloudflare.F(c.name),
+					Organization: cloudflare.F(c.organization),
+				}),
+			}),
+		})
+	}
+	ws, err := s.client.RegistrarSandbox.Registrations.New(ctx, params)
+	if err != nil {
+		return workflowView{}, err
+	}
+	return workflowView{completed: ws.Completed, state: string(ws.State), errCode: ws.Error.Code, errMsg: ws.Error.Message}, nil
+}
+
+func (s *sandboxRegistrar) GetRegistration(ctx context.Context, domainName string) (registrationView, error) {
+	reg, err := s.client.RegistrarSandbox.Registrations.Get(ctx, domainName, registrar_sandbox.RegistrationGetParams{
+		AccountID: cloudflare.F(s.accountID),
+	})
+	if err != nil {
+		return registrationView{}, err
+	}
+	return registrationOf(reg.DomainName, reg.AutoRenew, reg.ExpiresAt, string(reg.Status)), nil
+}
+
+func (s *sandboxRegistrar) EditRegistration(ctx context.Context, domainName string, autoRenew bool) (workflowView, error) {
+	ws, err := s.client.RegistrarSandbox.Registrations.Edit(ctx, domainName, registrar_sandbox.RegistrationEditParams{
+		AccountID: cloudflare.F(s.accountID),
+		AutoRenew: cloudflare.F(autoRenew),
+	})
+	if err != nil {
+		return workflowView{}, err
+	}
+	return workflowView{completed: ws.Completed, state: string(ws.State), errCode: ws.Error.Code, errMsg: ws.Error.Message}, nil
+}
+
+func (s *sandboxRegistrar) GetRegistrationStatus(ctx context.Context, domainName string) (workflowView, error) {
+	ws, err := s.client.RegistrarSandbox.RegistrationStatus.Get(ctx, domainName, registrar_sandbox.RegistrationStatusGetParams{
+		AccountID: cloudflare.F(s.accountID),
+	})
+	if err != nil {
+		return workflowView{}, err
+	}
+	return workflowView{completed: ws.Completed, state: string(ws.State), errCode: ws.Error.Code, errMsg: ws.Error.Message}, nil
+}
+
 // Metadata
 func (r *cloudflareDomainResource) Metadata(_ context.Context, req resource.MetadataRequest, resp *resource.MetadataResponse) {
 	resp.TypeName = req.ProviderTypeName + "_domain"
@@ -64,9 +253,9 @@ func (r *cloudflareDomainResource) Metadata(_ context.Context, req resource.Meta
 // Schema
 func (r *cloudflareDomainResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *resource.SchemaResponse) {
 	resp.Schema = schema.Schema{
-		Description: "Register a domain through the Cloudflare Registrar. Requires the provider `api_token` and `account_id`. " +
-			"When the provider `use_sandbox` flag is set, the resource targets the Registrar Sandbox endpoints " +
-			"(free test registrations, `.com`/`.net` only).",
+		Description: "Register a domain through the Cloudflare Registrar. Requires the provider `account_id` and " +
+			"`api_token`. When the provider `use_sandbox` flag is set, the resource targets the Registrar Sandbox " +
+			"endpoints (free test registrations, `.com`/`.net` only).",
 		Attributes: map[string]schema.Attribute{
 			"domain": &schema.StringAttribute{
 				MarkdownDescription: "Domain name to register (FQDN, e.g. `example.com`).",
@@ -155,7 +344,8 @@ func (r *cloudflareDomainResource) Schema(_ context.Context, _ resource.SchemaRe
 	}
 }
 
-// Configure adds the provider configured client to the resource.
+// Configure picks the production or sandbox registrar service based on the
+// provider configuration.
 func (r *cloudflareDomainResource) Configure(_ context.Context, req resource.ConfigureRequest, resp *resource.ConfigureResponse) {
 	if req.ProviderData == nil {
 		// this data available on apply stage
@@ -166,7 +356,11 @@ func (r *cloudflareDomainResource) Configure(_ context.Context, req resource.Con
 		resp.Diagnostics.AddError("req.ProviderData isn't a *providerClients", "")
 		return
 	}
-	r.client = clients.registrar
+	if clients.useSandbox {
+		r.registrar = &sandboxRegistrar{client: clients.cloudflare, accountID: clients.accountID}
+	} else {
+		r.registrar = &productionRegistrar{client: clients.cloudflare, accountID: clients.accountID}
+	}
 }
 
 // Create
@@ -178,44 +372,40 @@ func (r *cloudflareDomainResource) Create(ctx context.Context, req resource.Crea
 		return
 	}
 
-	if err := r.validateClient(); err != nil {
+	if err := r.validateRegistrar(); err != nil {
 		resp.Diagnostics.Append(diagnosticErrorOf(err, "provider is not ready to register domains"))
 		return
 	}
 
 	domain := plan.Domain.ValueString()
-	params := sdk.RegistrationCreateParams{
-		DomainName:  domain,
-		AutoRenew:   plan.AutoRenew.ValueBool(),
-		PrivacyMode: privacyModeOf(plan.Privacy.ValueBool()),
+	opts := createRegistrationOptions{
+		domainName: domain,
+		autoRenew:  plan.AutoRenew.ValueBool(),
+		privacy:    plan.Privacy.ValueBool(),
+		contact:    plan.RegistrantContact,
 	}
 	if !plan.PurchaseYears.IsNull() {
-		params.Years = plan.PurchaseYears.ValueInt64()
-	}
-	if plan.RegistrantContact != nil {
-		params.Contacts = &sdk.RegistrationContacts{
-			Registrant: registrantContactOf(plan.RegistrantContact),
-		}
+		opts.years = plan.PurchaseYears.ValueInt64()
 	}
 
 	tflog.Info(ctx, fmt.Sprintf("Domain [%s] is registering...", domain))
-	workflow, err := r.client.RegistrationsCreate(ctx, params)
+	workflow, err := r.registrar.CreateRegistration(ctx, opts)
 	if err != nil {
 		resp.Diagnostics.Append(diagnosticErrorOf(err, "register domain [%s] failed", domain))
 		return
 	}
 
-	if _, err := r.client.WaitRegistrationWorkflow(ctx, workflow, domainRegistrationTimeout); err != nil {
+	if _, err := waitRegistrationWorkflow(ctx, r.registrar, domain, workflow, domainRegistrationTimeout); err != nil {
 		resp.Diagnostics.Append(diagnosticErrorOf(err, "register domain [%s] failed", domain))
 		return
 	}
 
-	registration, err := r.client.RegistrationsGet(ctx, domain)
+	registration, err := r.registrar.GetRegistration(ctx, domain)
 	if err != nil {
 		resp.Diagnostics.Append(diagnosticErrorOf(err, "fetch registration for domain [%s] failed", domain))
 		return
 	}
-	tflog.Info(ctx, fmt.Sprintf("Domain [%s] registered, expires at [%s]", domain, registration.ExpiresAt))
+	tflog.Info(ctx, fmt.Sprintf("Domain [%s] registered, expires at [%s]", domain, registration.expiresAt))
 
 	state := cloudflareDomainModel{
 		Domain:            plan.Domain,
@@ -223,8 +413,8 @@ func (r *cloudflareDomainResource) Create(ctx context.Context, req resource.Crea
 		AutoRenew:         plan.AutoRenew,
 		Privacy:           plan.Privacy,
 		RegistrantContact: plan.RegistrantContact,
-		DomainExpiryDate:  types.StringValue(registration.ExpiresAt),
-		Status:            types.StringValue(registration.Status),
+		DomainExpiryDate:  types.StringValue(registration.expiresAt),
+		Status:            types.StringValue(registration.status),
 	}
 
 	d2 := resp.State.Set(ctx, &state)
@@ -244,9 +434,10 @@ func (r *cloudflareDomainResource) Read(ctx context.Context, req resource.ReadRe
 	}
 
 	domain := state.Domain.ValueString()
-	registration, err := r.client.RegistrationsGet(ctx, domain)
+	registration, err := r.registrar.GetRegistration(ctx, domain)
 	if err != nil {
-		if strings.Contains(err.Error(), "Domain not found") {
+		var apiErr *cloudflare.Error
+		if errors.As(err, &apiErr) && apiErr.StatusCode == 404 {
 			resp.State.RemoveResource(ctx)
 		} else {
 			resp.Diagnostics.Append(diagnosticErrorOf(err, "fetch registration for domain [%s] failed", domain))
@@ -254,9 +445,9 @@ func (r *cloudflareDomainResource) Read(ctx context.Context, req resource.ReadRe
 		return
 	}
 
-	state.AutoRenew = types.BoolValue(registration.AutoRenew)
-	state.DomainExpiryDate = types.StringValue(registration.ExpiresAt)
-	state.Status = types.StringValue(registration.Status)
+	state.AutoRenew = types.BoolValue(registration.autoRenew)
+	state.DomainExpiryDate = types.StringValue(registration.expiresAt)
+	state.Status = types.StringValue(registration.status)
 
 	d1 := resp.State.Set(ctx, state)
 	resp.Diagnostics.Append(d1...)
@@ -306,18 +497,18 @@ func (r *cloudflareDomainResource) Update(ctx context.Context, req resource.Upda
 
 	if !plan.AutoRenew.Equal(state.AutoRenew) {
 		tflog.Info(ctx, fmt.Sprintf("Domain [%s] auto_renew update to [%t]...", domain, plan.AutoRenew.ValueBool()))
-		workflow, err := r.client.RegistrationsEdit(ctx, domain, plan.AutoRenew.ValueBool())
+		workflow, err := r.registrar.EditRegistration(ctx, domain, plan.AutoRenew.ValueBool())
 		if err != nil {
 			resp.Diagnostics.Append(diagnosticErrorOf(err, "update domain [%s] failed", domain))
 			return
 		}
-		if _, err := r.client.WaitRegistrationWorkflow(ctx, workflow, domainUpdateTimeout); err != nil {
+		if _, err := waitRegistrationWorkflow(ctx, r.registrar, domain, workflow, domainUpdateTimeout); err != nil {
 			resp.Diagnostics.Append(diagnosticErrorOf(err, "update domain [%s] failed", domain))
 			return
 		}
 	}
 
-	registration, err := r.client.RegistrationsGet(ctx, domain)
+	registration, err := r.registrar.GetRegistration(ctx, domain)
 	if err != nil {
 		resp.Diagnostics.Append(diagnosticErrorOf(err, "fetch registration for domain [%s] failed", domain))
 		return
@@ -326,11 +517,11 @@ func (r *cloudflareDomainResource) Update(ctx context.Context, req resource.Upda
 	newState := cloudflareDomainModel{
 		Domain:            plan.Domain,
 		PurchaseYears:     plan.PurchaseYears,
-		AutoRenew:         types.BoolValue(registration.AutoRenew),
+		AutoRenew:         types.BoolValue(registration.autoRenew),
 		Privacy:           plan.Privacy,
 		RegistrantContact: plan.RegistrantContact,
-		DomainExpiryDate:  types.StringValue(registration.ExpiresAt),
-		Status:            types.StringValue(registration.Status),
+		DomainExpiryDate:  types.StringValue(registration.expiresAt),
+		Status:            types.StringValue(registration.status),
 	}
 
 	setStateDiags := resp.State.Set(ctx, &newState)
@@ -362,42 +553,93 @@ func (r *cloudflareDomainResource) ImportState(ctx context.Context, req resource
 	resource.ImportStatePassthroughID(ctx, path.Root("domain"), req, resp)
 }
 
-func (r *cloudflareDomainResource) validateClient() error {
-	if r.client == nil {
-		return fmt.Errorf("registrar client is not configured")
+// waitRegistrationWorkflow polls the registration status until the workflow
+// succeeds, reaches a state that needs user action, or the timeout is
+// exhausted.
+func waitRegistrationWorkflow(ctx context.Context, svc registrarService, domain string, workflow workflowView, timeout time.Duration) (workflowView, error) {
+	if workflow.completed && workflow.state == string(registrar.WorkflowStatusStateSucceeded) {
+		return workflow, nil
 	}
-	if r.client.APIToken == "" {
-		return fmt.Errorf("st-cloudflare_domain requires the provider `api_token` (API tokens only; email + api_key is not supported)")
+
+	last := workflow
+	deadline := time.Now().Add(timeout)
+	interval := 2 * time.Second
+
+	for {
+		w, err := svc.GetRegistrationStatus(ctx, domain)
+		if err == nil {
+			last = w
+			switch w.state {
+			case string(registrar.WorkflowStatusStateSucceeded):
+				return w, nil
+			case string(registrar.WorkflowStatusStateFailed), string(registrar.WorkflowStatusStateActionRequired):
+				return w, fmt.Errorf("registration workflow for [%s] state=%s: %s", domain, w.state, w.errMsg)
+			}
+		}
+
+		if time.Now().After(deadline) {
+			return last, fmt.Errorf("timed out waiting for registration workflow of [%s] (state=%s)", domain, last.state)
+		}
+
+		select {
+		case <-ctx.Done():
+			return last, ctx.Err()
+		case <-time.After(interval):
+		}
+		if interval < 30*time.Second {
+			interval *= 2
+		}
 	}
-	if r.client.AccountID == "" {
-		return fmt.Errorf("st-cloudflare_domain requires the provider `account_id`")
+}
+
+func (r *cloudflareDomainResource) validateRegistrar() error {
+	if r.registrar == nil {
+		return fmt.Errorf("registrar service is not configured")
 	}
 	return nil
 }
 
-func privacyModeOf(privacy bool) string {
-	if privacy {
-		return sdk.PrivacyModeRedaction
-	}
-	return sdk.PrivacyModeOff
+// registrantContact is the plain-value form of the contact model shared by
+// the production and sandbox adapters.
+type registrantContact struct {
+	email, phone, fax       string
+	name, organization      string
+	street, city, state     string
+	postalCode, countryCode string
 }
 
-func registrantContactOf(m *registrantContactModel) *sdk.RegistrationContact {
-	return &sdk.RegistrationContact{
-		Email: m.Email.ValueString(),
-		Phone: m.Phone.ValueString(),
-		Fax:   m.Fax.ValueString(),
-		PostalInfo: sdk.RegistrationContactPostalInfo{
-			Address: sdk.RegistrationContactAddress{
-				Street:      m.Street.ValueString(),
-				City:        m.City.ValueString(),
-				State:       m.State.ValueString(),
-				PostalCode:  m.PostalCode.ValueString(),
-				CountryCode: m.CountryCode.ValueString(),
-			},
-			Name:         m.Name.ValueString(),
-			Organization: m.Organization.ValueString(),
-		},
+func contactOf(m *registrantContactModel) registrantContact {
+	return registrantContact{
+		email:        m.Email.ValueString(),
+		phone:        m.Phone.ValueString(),
+		fax:          m.Fax.ValueString(),
+		name:         m.Name.ValueString(),
+		organization: m.Organization.ValueString(),
+		street:       m.Street.ValueString(),
+		city:         m.City.ValueString(),
+		state:        m.State.ValueString(),
+		postalCode:   m.PostalCode.ValueString(),
+		countryCode:  m.CountryCode.ValueString(),
+	}
+}
+
+func privacyModeOf(privacy bool) string {
+	if privacy {
+		return "redaction"
+	}
+	return "off"
+}
+
+func registrationOf(domainName string, autoRenew bool, expiresAt time.Time, status string) registrationView {
+	expiry := ""
+	if !expiresAt.IsZero() {
+		expiry = expiresAt.Format(time.RFC3339)
+	}
+	return registrationView{
+		domainName: domainName,
+		autoRenew:  autoRenew,
+		expiresAt:  expiry,
+		status:     status,
 	}
 }
 

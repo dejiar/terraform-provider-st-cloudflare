@@ -8,9 +8,9 @@ description: |-
 
 # st-cloudflare_domain (Resource)
 
-Register a domain through the Cloudflare Registrar. Registration goes through the Registrar Registrations API; when the provider `use_sandbox` flag is set, the resource targets the Registrar Sandbox endpoints instead, which allow free test registrations (`.com`/`.net` only) without real domains or billing.
+Register a domain through the Cloudflare Registrar. Registration goes through the Registrar Registrations API via the official cloudflare-go SDK; when the provider `use_sandbox` flag is set, the resource targets the Registrar Sandbox endpoints instead, which allow free test registrations (`.com`/`.net` only) without real domains or billing.
 
-Requires the provider `api_token` (API tokens only) and `account_id`.
+Requires the provider `api_token` and `account_id`.
 
 ## Example Usage
 

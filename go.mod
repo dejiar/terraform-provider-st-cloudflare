@@ -1,10 +1,10 @@
 module github.com/myklst/terraform-provider-st-cloudflare
 
-go 1.24.2
+go 1.26.0
 
 require (
 	github.com/cenkalti/backoff v2.2.1+incompatible
-	github.com/cloudflare/cloudflare-go/v4 v4.4.0
+	github.com/cloudflare/cloudflare-go/v7 v7.13.1
 	github.com/hashicorp/terraform-plugin-docs v0.22.0
 	github.com/hashicorp/terraform-plugin-framework v1.15.0
 	github.com/hashicorp/terraform-plugin-framework-validators v0.18.0
