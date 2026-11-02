@@ -14,6 +14,19 @@ Requires the provider `api_token`; the `account_id` is set on the resource.
 
 ## Example Usage
 
+Minimal — uses the account's default address book contact (set once under Domain Registration → Registrant Contact in the Cloudflare dashboard):
+
+```terraform
+resource "st-cloudflare_domain" "example_domain" {
+  account_id = "023e105f4ecef8ad9ca31a8372d0c353"
+  domain     = "example.com"
+  auto_renew = true
+  privacy    = true
+}
+```
+
+With an inline registrant contact (required in sandbox mode, where there is no address book fallback):
+
 ```terraform
 resource "st-cloudflare_domain" "example_domain" {
   account_id = "023e105f4ecef8ad9ca31a8372d0c353"
