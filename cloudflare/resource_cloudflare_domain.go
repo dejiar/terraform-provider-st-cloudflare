@@ -423,16 +423,22 @@ func (r *cloudflareDomainResource) Create(ctx context.Context, req resource.Crea
 	if opts.contact == nil && plan.UseSandbox.ValueBool() {
 		opts.contact = sandboxPlaceholderContact()
 	}
+	// When relying on the account's default address book contact, tell the
+	// user what to complete if Cloudflare rejects the registration.
+	contactHint := ""
+	if opts.contact == nil {
+		contactHint = "; no registrant_contact was provided, so the account's default address book contact is used — complete it in the Cloudflare dashboard (Domain Registration → Registrant Contact) or add a registrant_contact block to this resource"
+	}
 
 	tflog.Info(ctx, fmt.Sprintf("Domain [%s] is registering...", domain))
 	workflow, err := svc.CreateRegistration(ctx, opts)
 	if err != nil {
-		resp.Diagnostics.Append(diagnosticErrorOf(err, "register domain [%s] failed", domain))
+		resp.Diagnostics.Append(diagnosticErrorOf(err, "register domain [%s] failed%s", domain, contactHint))
 		return
 	}
 
 	if _, err := waitRegistrationWorkflow(ctx, svc, domain, workflow, domainRegistrationTimeout); err != nil {
-		resp.Diagnostics.Append(diagnosticErrorOf(err, "register domain [%s] failed", domain))
+		resp.Diagnostics.Append(diagnosticErrorOf(err, "register domain [%s] failed%s", domain, contactHint))
 		return
 	}
 
