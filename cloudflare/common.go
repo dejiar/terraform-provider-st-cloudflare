@@ -4,7 +4,6 @@ import (
 	"context"
 	"os"
 	"regexp"
-	"strconv"
 
 	"github.com/cloudflare/cloudflare-go/v7"
 	"github.com/cloudflare/cloudflare-go/v7/option"
@@ -25,20 +24,17 @@ var (
 
 type cloudflareProvider struct{}
 
-// providerClients bundles the shared cloudflare-go client and the provider
-// settings handed to resources and data sources. The domain resource uses
-// useSandbox to pick the Registrar or Registrar Sandbox service and carries
-// its own account_id.
+// providerClients bundles the shared cloudflare-go client handed to
+// resources and data sources. Resources carry their own scope (account,
+// sandbox) as resource attributes.
 type providerClients struct {
 	cloudflare *cloudflare.Client
-	useSandbox bool
 }
 
 type cloudflareProviderModel struct {
-	Email      types.String `tfsdk:"email" json:"email"`
-	APIKey     types.String `tfsdk:"api_key" json:"api_key"`
-	APIToken   types.String `tfsdk:"api_token" json:"api_token"`
-	UseSandbox types.Bool   `tfsdk:"use_sandbox" json:"use_sandbox"`
+	Email    types.String `tfsdk:"email" json:"email"`
+	APIKey   types.String `tfsdk:"api_key" json:"api_key"`
+	APIToken types.String `tfsdk:"api_token" json:"api_token"`
 }
 
 // New is a helper function to simplify provider server
@@ -89,12 +85,6 @@ func (p *cloudflareProvider) Schema(_ context.Context, _ provider.SchemaRequest,
 					),
 				},
 			},
-			"use_sandbox": schema.BoolAttribute{
-				Description: "Whether to use the Registrar Sandbox endpoints for domain registrations, which " +
-					"allow free test registrations (`.com`/`.net` only) without real domains or billing. " +
-					"May also be provided via CLOUDFLARE_USE_SANDBOX environment variable.",
-				Optional: true,
-			},
 		},
 	}
 }
@@ -127,24 +117,6 @@ func (p *cloudflareProvider) Configure(ctx context.Context, req provider.Configu
 		apiToken = config.APIToken.ValueString()
 	} else {
 		apiToken = os.Getenv("CLOUDFLARE_API_TOKEN")
-	}
-
-	var useSandbox bool
-	if !config.UseSandbox.IsNull() {
-		useSandbox = config.UseSandbox.ValueBool()
-	} else if v := os.Getenv("CLOUDFLARE_USE_SANDBOX"); v != "" {
-		parsed, err := strconv.ParseBool(v)
-		if err != nil {
-			resp.Diagnostics.AddAttributeError(
-				path.Root("use_sandbox"),
-				"Invalid Cloudflare use_sandbox",
-				"The provider cannot create the Registrar client as there is an invalid value for the "+
-					"CLOUDFLARE_USE_SANDBOX environment variable. Set the use_sandbox value in the configuration "+
-					"or fix the environment variable to a valid boolean.",
-			)
-			return
-		}
-		useSandbox = parsed
 	}
 
 	// API Token or both email and API Key have to be set, return
@@ -192,7 +164,6 @@ func (p *cloudflareProvider) Configure(ctx context.Context, req provider.Configu
 
 	clients := &providerClients{
 		cloudflare: client,
-		useSandbox: useSandbox,
 	}
 
 	resp.DataSourceData = clients

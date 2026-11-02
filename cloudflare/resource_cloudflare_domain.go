@@ -14,6 +14,8 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/booldefault"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/boolplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
@@ -28,14 +30,13 @@ const (
 )
 
 type cloudflareDomainResource struct {
-	client     *cloudflare.Client
-	useSandbox bool
+	client *cloudflare.Client
 }
 
 // registrarFor builds the registrar service for one account: production
-// Registrar or Registrar Sandbox, per the provider use_sandbox flag.
-func (r *cloudflareDomainResource) registrarFor(accountID string) registrarService {
-	if r.useSandbox {
+// Registrar or Registrar Sandbox, per the resource use_sandbox attribute.
+func (r *cloudflareDomainResource) registrarFor(accountID string, useSandbox bool) registrarService {
+	if useSandbox {
 		return &sandboxRegistrar{client: r.client, accountID: accountID}
 	}
 	return &productionRegistrar{client: r.client, accountID: accountID}
@@ -60,6 +61,7 @@ type registrantContactModel struct {
 
 type cloudflareDomainModel struct {
 	AccountID         types.String            `tfsdk:"account_id"`
+	UseSandbox        types.Bool              `tfsdk:"use_sandbox"`
 	Domain            types.String            `tfsdk:"domain"`
 	PurchaseYears     types.Int64             `tfsdk:"purchase_years"`
 	AutoRenew         types.Bool              `tfsdk:"auto_renew"`
@@ -265,7 +267,7 @@ func (r *cloudflareDomainResource) Metadata(_ context.Context, req resource.Meta
 func (r *cloudflareDomainResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *resource.SchemaResponse) {
 	resp.Schema = schema.Schema{
 		Description: "Register a domain through the Cloudflare Registrar. Requires the provider `api_token`. " +
-			"When the provider `use_sandbox` flag is set, the resource targets the Registrar Sandbox endpoints " +
+			"When `use_sandbox` is set on the resource, it targets the Registrar Sandbox endpoints " +
 			"(free test registrations, `.com`/`.net` only).",
 		Attributes: map[string]schema.Attribute{
 			"account_id": &schema.StringAttribute{
@@ -274,6 +276,17 @@ func (r *cloudflareDomainResource) Schema(_ context.Context, _ resource.SchemaRe
 				Required: true,
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.RequiresReplace(),
+				},
+			},
+			"use_sandbox": &schema.BoolAttribute{
+				MarkdownDescription: "Register through the Registrar Sandbox endpoints instead of the production " +
+					"Registrar: free test registrations (`.com`/`.net` only), no billing, no real domains. " +
+					"Defaults to `false`. Changing it forces replacement.",
+				Optional: true,
+				Computed: true,
+				Default:  booldefault.StaticBool(false),
+				PlanModifiers: []planmodifier.Bool{
+					boolplanmodifier.RequiresReplace(),
 				},
 			},
 			"domain": &schema.StringAttribute{
@@ -363,8 +376,8 @@ func (r *cloudflareDomainResource) Schema(_ context.Context, _ resource.SchemaRe
 	}
 }
 
-// Configure stores the shared cloudflare-go client and sandbox flag; the
-// account_id comes from each resource instance.
+// Configure stores the shared cloudflare-go client; account_id and
+// use_sandbox come from each resource instance.
 func (r *cloudflareDomainResource) Configure(_ context.Context, req resource.ConfigureRequest, resp *resource.ConfigureResponse) {
 	if req.ProviderData == nil {
 		// this data available on apply stage
@@ -376,7 +389,6 @@ func (r *cloudflareDomainResource) Configure(_ context.Context, req resource.Con
 		return
 	}
 	r.client = clients.cloudflare
-	r.useSandbox = clients.useSandbox
 }
 
 // Create
@@ -394,7 +406,7 @@ func (r *cloudflareDomainResource) Create(ctx context.Context, req resource.Crea
 	}
 
 	accountID := plan.AccountID.ValueString()
-	svc := r.registrarFor(accountID)
+	svc := r.registrarFor(accountID, plan.UseSandbox.ValueBool())
 	domain := plan.Domain.ValueString()
 	opts := createRegistrationOptions{
 		domainName: domain,
@@ -427,6 +439,7 @@ func (r *cloudflareDomainResource) Create(ctx context.Context, req resource.Crea
 
 	state := cloudflareDomainModel{
 		AccountID:         plan.AccountID,
+		UseSandbox:        plan.UseSandbox,
 		Domain:            plan.Domain,
 		PurchaseYears:     plan.PurchaseYears,
 		AutoRenew:         plan.AutoRenew,
@@ -453,7 +466,7 @@ func (r *cloudflareDomainResource) Read(ctx context.Context, req resource.ReadRe
 	}
 
 	accountID := state.AccountID.ValueString()
-	svc := r.registrarFor(accountID)
+	svc := r.registrarFor(accountID, state.UseSandbox.ValueBool())
 	domain := state.Domain.ValueString()
 	registration, err := svc.GetRegistration(ctx, domain)
 	if err != nil {
@@ -494,7 +507,7 @@ func (r *cloudflareDomainResource) Update(ctx context.Context, req resource.Upda
 	}
 
 	accountID := plan.AccountID.ValueString()
-	svc := r.registrarFor(accountID)
+	svc := r.registrarFor(accountID, plan.UseSandbox.ValueBool())
 	domain := plan.Domain.ValueString()
 
 	// The Registrar API supports updating auto_renew only; everything else is
@@ -539,6 +552,7 @@ func (r *cloudflareDomainResource) Update(ctx context.Context, req resource.Upda
 
 	newState := cloudflareDomainModel{
 		AccountID:         plan.AccountID,
+		UseSandbox:        plan.UseSandbox,
 		Domain:            plan.Domain,
 		PurchaseYears:     plan.PurchaseYears,
 		AutoRenew:         types.BoolValue(registration.autoRenew),

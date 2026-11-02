@@ -8,7 +8,7 @@ description: |-
 
 # st-cloudflare_domain (Resource)
 
-Register a domain through the Cloudflare Registrar. Registration goes through the Registrar Registrations API via the official cloudflare-go SDK; when the provider `use_sandbox` flag is set, the resource targets the Registrar Sandbox endpoints instead, which allow free test registrations (`.com`/`.net` only) without real domains or billing.
+Register a domain through the Cloudflare Registrar. Registration goes through the Registrar Registrations API via the official cloudflare-go SDK; when the resource's `use_sandbox` attribute is set, it targets the Registrar Sandbox endpoints instead, which allow free test registrations (`.com`/`.net` only) without real domains or billing.
 
 Requires the provider `api_token`; the `account_id` is set on the resource.
 
@@ -48,6 +48,7 @@ resource "st-cloudflare_domain" "example_domain" {
 
 - `purchase_years` (Number) Registration term in years (1-10). Defaults to the registry's minimum period (1 year for most extensions). Cannot be changed after registration.
 - `registrant_contact` (Attributes) Registrant contact for the registration. When omitted, the account's default address book entry is used; without either, registration fails. Sandbox mode always requires a contact. (see [below for nested schema](#nestedatt--registrant_contact))
+- `use_sandbox` (Boolean) Register through the Registrar Sandbox endpoints instead of the production Registrar: free test registrations (`.com`/`.net` only), no billing, no real domains. Defaults to `false`. Changing it forces replacement.
 
 ### Read-Only
 
@@ -77,5 +78,5 @@ Optional:
 
 - **Updates**: the Cloudflare Registrar API supports updating `auto_renew` only. Changing `purchase_years`, `privacy`, or `registrant_contact` after creation produces an explicit error.
 - **Delete**: domain registrations cannot be deleted in Cloudflare; `terraform destroy` only removes the resource from state and logs a warning. The domain stays registered — disable `auto_renew` to stop renewal charges.
-- **Sandbox**: `use_sandbox = true` registers against `/registrar-sandbox/` — no billing, no real domains, `.com`/`.net` only, and sandbox purchases are persisted (a name bought there is not re-buyable in the sandbox).
-- **Import**: `terraform import st-cloudflare_domain.example_domain <account_id>/<domain>` — the account ID is needed to locate the registration.
+- **Sandbox**: `use_sandbox = true` registers against `/registrar-sandbox/` — no billing, no real domains, `.com`/`.net` only, and sandbox purchases are persisted (a name bought there is not re-buyable in the sandbox). The `st-cloudflare_zone_type` resource is unaffected: zone operations always run against the production Cloudflare API.
+- **Import**: `terraform import st-cloudflare_domain.example_domain <account_id>/<domain>` — the account ID is needed to locate the registration. For sandbox-registered domains, set `use_sandbox = true` in the configuration before importing, since the import ID cannot carry it.
