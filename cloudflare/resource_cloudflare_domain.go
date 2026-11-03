@@ -18,6 +18,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/booldefault"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/boolplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/int64default"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
@@ -90,9 +91,10 @@ func (r *cloudflareDomainResource) Schema(_ context.Context, _ resource.SchemaRe
 				},
 			},
 			"purchase_years": &schema.Int64Attribute{
-				MarkdownDescription: "Registration term in years (1-10). Defaults to the registry's minimum period " +
-					"(1 year for most extensions). Cannot be changed after registration.",
-				Optional: true,
+				MarkdownDescription: "Registration term in years (1-10). Defaults to `1`. Cannot be changed after registration.",
+				Optional:            true,
+				Computed:            true,
+				Default:             int64default.StaticInt64(1),
 				Validators: []validator.Int64{
 					int64validator.Between(1, 10),
 				},
@@ -101,7 +103,7 @@ func (r *cloudflareDomainResource) Schema(_ context.Context, _ resource.SchemaRe
 				MarkdownDescription: "Maximum price for the purchase. The provider checks the current registrar " +
 					"price (first year plus any extra years at the renewal rate) and refuses to buy when it " +
 					"exceeds this value.",
-				Optional: true,
+				Required: true,
 				Validators: []validator.Float64{
 					float64validator.AtLeast(0),
 				},
@@ -166,15 +168,10 @@ func (r *cloudflareDomainResource) Create(ctx context.Context, req resource.Crea
 		contactHint = "; if the account has no default address book contact, complete it in the Cloudflare dashboard (Domain Registration → Registrant Contact)"
 	}
 
-	years := int64(0)
-	if !plan.PurchaseYears.IsNull() {
-		years = plan.PurchaseYears.ValueInt64()
-	}
-	if !plan.MaxPrice.IsNull() {
-		if err := svc.ensurePriceWithin(ctx, domain, years, plan.MaxPrice.ValueFloat64()); err != nil {
-			resp.Diagnostics.Append(diagnosticErrorOf(err, "register domain [%s] failed", domain))
-			return
-		}
+	years := plan.PurchaseYears.ValueInt64()
+	if err := svc.ensurePriceWithin(ctx, domain, years, plan.MaxPrice.ValueFloat64()); err != nil {
+		resp.Diagnostics.Append(diagnosticErrorOf(err, "register domain [%s] failed", domain))
+		return
 	}
 	importID := fmt.Sprintf("%s/%s", accountID, domain)
 	if useSandbox {
@@ -406,9 +403,7 @@ func (a *registrarAdapter) createDomain(ctx context.Context, domainName string, 
 				}),
 			}),
 		}
-		if years > 0 {
-			params.Years = cloudflare.F(years)
-		}
+		params.Years = cloudflare.F(years)
 		_, err := a.client.RegistrarSandbox.Registrations.New(ctx, params)
 		return err
 	}
@@ -418,9 +413,7 @@ func (a *registrarAdapter) createDomain(ctx context.Context, domainName string, 
 		AutoRenew:   cloudflare.F(autoRenew),
 		PrivacyMode: cloudflare.F(registrar.RegistrationNewParamsPrivacyMode(privacyModeOf(privacy))),
 	}
-	if years > 0 {
-		params.Years = cloudflare.F(years)
-	}
+	params.Years = cloudflare.F(years)
 	_, err := a.client.Registrar.Registrations.New(ctx, params)
 	return err
 }
