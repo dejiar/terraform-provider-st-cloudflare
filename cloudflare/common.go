@@ -80,8 +80,8 @@ func (p *cloudflareProvider) Schema(_ context.Context, _ provider.SchemaRequest,
 				Optional: true,
 				Validators: []validator.String{
 					stringvalidator.RegexMatches(
-						regexp.MustCompile(`[A-Za-z0-9-_]{40}`),
-						"API tokens must be 40 characters long and only contain characters a-z, A-Z, 0-9, hyphens and underscores",
+						regexp.MustCompile(`^(cfat_)?[A-Za-z0-9_-]{40,}$`),
+						"API tokens must be at least 40 characters (or a cfat_ account-owned token) and only contain characters a-z, A-Z, 0-9, hyphens and underscores",
 					),
 				},
 			},
