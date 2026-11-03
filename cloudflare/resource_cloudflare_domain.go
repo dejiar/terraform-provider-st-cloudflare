@@ -158,8 +158,17 @@ func (r *cloudflareDomainResource) Create(ctx context.Context, req resource.Crea
 
 	accountID := plan.AccountID.ValueString()
 	useSandbox := plan.UseSandbox.ValueBool()
-	svc := &registrarAdapter{client: r.client, accountID: accountID, sandbox: useSandbox}
 	domain := plan.Domain.ValueString()
+	years := plan.PurchaseYears.ValueInt64()
+	maxPrice := plan.MaxPrice.ValueFloat64()
+	autoRenew := plan.AutoRenew.ValueBool()
+	privacy := plan.Privacy.ValueBool()
+
+	svc := &registrarAdapter{client: r.client, accountID: accountID, sandbox: useSandbox}
+	importID := fmt.Sprintf("%s/%s", accountID, domain)
+	if useSandbox {
+		importID = "sandbox/" + importID
+	}
 
 	// The registrant contact comes from the account's address book; when
 	// the account has none, tell the user what to complete.
@@ -168,18 +177,13 @@ func (r *cloudflareDomainResource) Create(ctx context.Context, req resource.Crea
 		contactHint = "; if the account has no default address book contact, complete it in the Cloudflare dashboard (Domain Registration → Registrant Contact)"
 	}
 
-	years := plan.PurchaseYears.ValueInt64()
-	if err := svc.ensurePriceWithin(ctx, domain, years, plan.MaxPrice.ValueFloat64()); err != nil {
+	if err := svc.ensurePriceWithin(ctx, domain, years, maxPrice); err != nil {
 		resp.Diagnostics.Append(diagnosticErrorOf(err, "register domain [%s] failed", domain))
 		return
 	}
-	importID := fmt.Sprintf("%s/%s", accountID, domain)
-	if useSandbox {
-		importID = "sandbox/" + importID
-	}
 	tflog.Info(ctx, fmt.Sprintf("Domain [%s] is registering...", domain))
 	createDomain := func() error {
-		return svc.createDomain(ctx, domain, plan.AutoRenew.ValueBool(), plan.Privacy.ValueBool(), years)
+		return svc.createDomain(ctx, domain, autoRenew, privacy, years)
 	}
 	if err := retry(ctx, createDomain); err != nil {
 		// The purchase was rejected. When this account already holds the
