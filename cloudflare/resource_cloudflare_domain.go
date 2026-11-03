@@ -489,7 +489,7 @@ func (a *registrarAdapter) waitWorkflow(ctx context.Context, domainName string, 
 }
 
 // checkDomainPrice refuses the purchase when the current first-year
-// registrar price exceeds maxPrice, like the namecheap provider's MaxPrice.
+// registrar price exceeds maxPrice.
 // The Registrar API has no server-side price cap, so the check runs on the
 // domain-check pricing before purchasing.
 func (a *registrarAdapter) checkDomainPrice(ctx context.Context, domainName string, maxPrice float64) error {
