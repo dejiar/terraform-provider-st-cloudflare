@@ -36,10 +36,7 @@ type cloudflareDomainResource struct {
 // registrarFor builds the registrar service for one account: production
 // Registrar or Registrar Sandbox, per the resource use_sandbox attribute.
 func (r *cloudflareDomainResource) registrarFor(accountID string, useSandbox bool) registrarService {
-	if useSandbox {
-		return &sandboxRegistrar{client: r.client, accountID: accountID}
-	}
-	return &productionRegistrar{client: r.client, accountID: accountID}
+	return &registrarAdapter{client: r.client, accountID: accountID, sandbox: useSandbox}
 }
 
 func NewCloudflareDomainResource() resource.Resource {
@@ -107,15 +104,55 @@ type registrarService interface {
 	GetRegistrationStatus(ctx context.Context, domainName string) (workflowView, error)
 }
 
-// productionRegistrar talks to /accounts/{account_id}/registrar/*.
-type productionRegistrar struct {
+// registrarAdapter talks to the Registrar API: the production endpoints
+// (/accounts/{account_id}/registrar/*) or, when sandbox is set, the Registrar
+// Sandbox (/accounts/{account_id}/registrar-sandbox/*).
+type registrarAdapter struct {
 	client    *cloudflare.Client
 	accountID string
+	sandbox   bool
 }
 
-func (p *productionRegistrar) CreateRegistration(ctx context.Context, opts createRegistrationOptions) (workflowView, error) {
+func (a *registrarAdapter) CreateRegistration(ctx context.Context, opts createRegistrationOptions) (workflowView, error) {
+	if a.sandbox {
+		params := registrar_sandbox.RegistrationNewParams{
+			AccountID:   cloudflare.F(a.accountID),
+			DomainName:  cloudflare.F(opts.domainName),
+			AutoRenew:   cloudflare.F(opts.autoRenew),
+			PrivacyMode: cloudflare.F(registrar_sandbox.RegistrationNewParamsPrivacyMode(privacyModeOf(opts.privacy))),
+		}
+		if opts.years > 0 {
+			params.Years = cloudflare.F(opts.years)
+		}
+		if opts.contact != nil {
+			c := contactOf(opts.contact)
+			params.Contacts = cloudflare.F(registrar_sandbox.RegistrationNewParamsContacts{
+				Registrant: cloudflare.F(registrar_sandbox.RegistrationNewParamsContactsRegistrant{
+					Email: cloudflare.F(c.email),
+					Phone: cloudflare.F(c.phone),
+					Fax:   cloudflare.F(c.fax),
+					PostalInfo: cloudflare.F(registrar_sandbox.RegistrationNewParamsContactsRegistrantPostalInfo{
+						Address: cloudflare.F(registrar_sandbox.RegistrationNewParamsContactsRegistrantPostalInfoAddress{
+							Street:      cloudflare.F(c.street),
+							City:        cloudflare.F(c.city),
+							State:       cloudflare.F(c.state),
+							PostalCode:  cloudflare.F(c.postalCode),
+							CountryCode: cloudflare.F(c.countryCode),
+						}),
+						Name:         cloudflare.F(c.name),
+						Organization: cloudflare.F(c.organization),
+					}),
+				}),
+			})
+		}
+		ws, err := a.client.RegistrarSandbox.Registrations.New(ctx, params)
+		if err != nil {
+			return workflowView{}, err
+		}
+		return workflowView{completed: ws.Completed, state: string(ws.State), errMsg: ws.Error.Message}, nil
+	}
 	params := registrar.RegistrationNewParams{
-		AccountID:   cloudflare.F(p.accountID),
+		AccountID:   cloudflare.F(a.accountID),
 		DomainName:  cloudflare.F(opts.domainName),
 		AutoRenew:   cloudflare.F(opts.autoRenew),
 		PrivacyMode: cloudflare.F(registrar.RegistrationNewParamsPrivacyMode(privacyModeOf(opts.privacy))),
@@ -144,91 +181,25 @@ func (p *productionRegistrar) CreateRegistration(ctx context.Context, opts creat
 			}),
 		})
 	}
-	ws, err := p.client.Registrar.Registrations.New(ctx, params)
+	ws, err := a.client.Registrar.Registrations.New(ctx, params)
 	if err != nil {
 		return workflowView{}, err
 	}
 	return workflowView{completed: ws.Completed, state: string(ws.State), errMsg: ws.Error.Message}, nil
 }
 
-func (p *productionRegistrar) GetRegistration(ctx context.Context, domainName string) (registrationView, error) {
-	reg, err := p.client.Registrar.Registrations.Get(ctx, domainName, registrar.RegistrationGetParams{
-		AccountID: cloudflare.F(p.accountID),
-	})
-	if err != nil {
-		return registrationView{}, err
-	}
-	return registrationOf(reg.AutoRenew, string(reg.PrivacyMode), reg.ExpiresAt, string(reg.Status)), nil
-}
-
-func (p *productionRegistrar) EditRegistration(ctx context.Context, domainName string, autoRenew bool) (workflowView, error) {
-	ws, err := p.client.Registrar.Registrations.Edit(ctx, domainName, registrar.RegistrationEditParams{
-		AccountID: cloudflare.F(p.accountID),
-		AutoRenew: cloudflare.F(autoRenew),
-	})
-	if err != nil {
-		return workflowView{}, err
-	}
-	return workflowView{completed: ws.Completed, state: string(ws.State), errMsg: ws.Error.Message}, nil
-}
-
-func (p *productionRegistrar) GetRegistrationStatus(ctx context.Context, domainName string) (workflowView, error) {
-	ws, err := p.client.Registrar.RegistrationStatus.Get(ctx, domainName, registrar.RegistrationStatusGetParams{
-		AccountID: cloudflare.F(p.accountID),
-	})
-	if err != nil {
-		return workflowView{}, err
-	}
-	return workflowView{completed: ws.Completed, state: string(ws.State), errMsg: ws.Error.Message}, nil
-}
-
-// sandboxRegistrar talks to /accounts/{account_id}/registrar-sandbox/*.
-type sandboxRegistrar struct {
-	client    *cloudflare.Client
-	accountID string
-}
-
-func (s *sandboxRegistrar) CreateRegistration(ctx context.Context, opts createRegistrationOptions) (workflowView, error) {
-	params := registrar_sandbox.RegistrationNewParams{
-		AccountID:   cloudflare.F(s.accountID),
-		DomainName:  cloudflare.F(opts.domainName),
-		AutoRenew:   cloudflare.F(opts.autoRenew),
-		PrivacyMode: cloudflare.F(registrar_sandbox.RegistrationNewParamsPrivacyMode(privacyModeOf(opts.privacy))),
-	}
-	if opts.years > 0 {
-		params.Years = cloudflare.F(opts.years)
-	}
-	if opts.contact != nil {
-		c := contactOf(opts.contact)
-		params.Contacts = cloudflare.F(registrar_sandbox.RegistrationNewParamsContacts{
-			Registrant: cloudflare.F(registrar_sandbox.RegistrationNewParamsContactsRegistrant{
-				Email: cloudflare.F(c.email),
-				Phone: cloudflare.F(c.phone),
-				Fax:   cloudflare.F(c.fax),
-				PostalInfo: cloudflare.F(registrar_sandbox.RegistrationNewParamsContactsRegistrantPostalInfo{
-					Address: cloudflare.F(registrar_sandbox.RegistrationNewParamsContactsRegistrantPostalInfoAddress{
-						Street:      cloudflare.F(c.street),
-						City:        cloudflare.F(c.city),
-						State:       cloudflare.F(c.state),
-						PostalCode:  cloudflare.F(c.postalCode),
-						CountryCode: cloudflare.F(c.countryCode),
-					}),
-					Name:         cloudflare.F(c.name),
-					Organization: cloudflare.F(c.organization),
-				}),
-			}),
+func (a *registrarAdapter) GetRegistration(ctx context.Context, domainName string) (registrationView, error) {
+	if a.sandbox {
+		reg, err := a.client.RegistrarSandbox.Registrations.Get(ctx, domainName, registrar_sandbox.RegistrationGetParams{
+			AccountID: cloudflare.F(a.accountID),
 		})
+		if err != nil {
+			return registrationView{}, err
+		}
+		return registrationOf(reg.AutoRenew, string(reg.PrivacyMode), reg.ExpiresAt, string(reg.Status)), nil
 	}
-	ws, err := s.client.RegistrarSandbox.Registrations.New(ctx, params)
-	if err != nil {
-		return workflowView{}, err
-	}
-	return workflowView{completed: ws.Completed, state: string(ws.State), errMsg: ws.Error.Message}, nil
-}
-
-func (s *sandboxRegistrar) GetRegistration(ctx context.Context, domainName string) (registrationView, error) {
-	reg, err := s.client.RegistrarSandbox.Registrations.Get(ctx, domainName, registrar_sandbox.RegistrationGetParams{
-		AccountID: cloudflare.F(s.accountID),
+	reg, err := a.client.Registrar.Registrations.Get(ctx, domainName, registrar.RegistrationGetParams{
+		AccountID: cloudflare.F(a.accountID),
 	})
 	if err != nil {
 		return registrationView{}, err
@@ -236,9 +207,19 @@ func (s *sandboxRegistrar) GetRegistration(ctx context.Context, domainName strin
 	return registrationOf(reg.AutoRenew, string(reg.PrivacyMode), reg.ExpiresAt, string(reg.Status)), nil
 }
 
-func (s *sandboxRegistrar) EditRegistration(ctx context.Context, domainName string, autoRenew bool) (workflowView, error) {
-	ws, err := s.client.RegistrarSandbox.Registrations.Edit(ctx, domainName, registrar_sandbox.RegistrationEditParams{
-		AccountID: cloudflare.F(s.accountID),
+func (a *registrarAdapter) EditRegistration(ctx context.Context, domainName string, autoRenew bool) (workflowView, error) {
+	if a.sandbox {
+		ws, err := a.client.RegistrarSandbox.Registrations.Edit(ctx, domainName, registrar_sandbox.RegistrationEditParams{
+			AccountID: cloudflare.F(a.accountID),
+			AutoRenew: cloudflare.F(autoRenew),
+		})
+		if err != nil {
+			return workflowView{}, err
+		}
+		return workflowView{completed: ws.Completed, state: string(ws.State), errMsg: ws.Error.Message}, nil
+	}
+	ws, err := a.client.Registrar.Registrations.Edit(ctx, domainName, registrar.RegistrationEditParams{
+		AccountID: cloudflare.F(a.accountID),
 		AutoRenew: cloudflare.F(autoRenew),
 	})
 	if err != nil {
@@ -247,9 +228,18 @@ func (s *sandboxRegistrar) EditRegistration(ctx context.Context, domainName stri
 	return workflowView{completed: ws.Completed, state: string(ws.State), errMsg: ws.Error.Message}, nil
 }
 
-func (s *sandboxRegistrar) GetRegistrationStatus(ctx context.Context, domainName string) (workflowView, error) {
-	ws, err := s.client.RegistrarSandbox.RegistrationStatus.Get(ctx, domainName, registrar_sandbox.RegistrationStatusGetParams{
-		AccountID: cloudflare.F(s.accountID),
+func (a *registrarAdapter) GetRegistrationStatus(ctx context.Context, domainName string) (workflowView, error) {
+	if a.sandbox {
+		ws, err := a.client.RegistrarSandbox.RegistrationStatus.Get(ctx, domainName, registrar_sandbox.RegistrationStatusGetParams{
+			AccountID: cloudflare.F(a.accountID),
+		})
+		if err != nil {
+			return workflowView{}, err
+		}
+		return workflowView{completed: ws.Completed, state: string(ws.State), errMsg: ws.Error.Message}, nil
+	}
+	ws, err := a.client.Registrar.RegistrationStatus.Get(ctx, domainName, registrar.RegistrationStatusGetParams{
+		AccountID: cloudflare.F(a.accountID),
 	})
 	if err != nil {
 		return workflowView{}, err
