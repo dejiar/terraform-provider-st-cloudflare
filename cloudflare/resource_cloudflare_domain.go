@@ -518,9 +518,12 @@ func (r *cloudflareDomainResource) Update(ctx context.Context, req resource.Upda
 	domain := plan.Domain.ValueString()
 
 	// The Registrar API supports updating auto_renew only; everything else is
-	// set at registration time and cannot be changed afterwards.
+	// set at registration time and cannot be changed afterwards. Fields the
+	// API never returns (purchase_years, registrant_contact) stay null after
+	// an import, so a null on either side means "unknown/unmanaged" and the
+	// planned value is adopted rather than rejected as an update.
 	changed := []string{}
-	if !plan.PurchaseYears.Equal(state.PurchaseYears) {
+	if !plan.PurchaseYears.Equal(state.PurchaseYears) && !plan.PurchaseYears.IsNull() && !state.PurchaseYears.IsNull() {
 		changed = append(changed, "purchase_years")
 	}
 	if !plan.Privacy.Equal(state.Privacy) {
@@ -728,8 +731,11 @@ func registrationOf(autoRenew bool, privacyMode string, expiresAt time.Time, sta
 }
 
 func registrantContactEqual(a *registrantContactModel, b *registrantContactModel) bool {
+	// A nil side is unknown/unmanaged (e.g. after an import, since the API
+	// never returns contacts), not a difference — the caller adopts the
+	// planned value.
 	if a == nil || b == nil {
-		return a == nil && b == nil
+		return true
 	}
 	return a.Email.Equal(b.Email) &&
 		a.Phone.Equal(b.Phone) &&
