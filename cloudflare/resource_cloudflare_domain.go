@@ -188,7 +188,7 @@ func (r *cloudflareDomainResource) Create(ctx context.Context, req resource.Crea
 			resp.Diagnostics.Append(diagnosticErrorOf(err, "register domain [%s] failed%s; if the workflow completes later, import it instead of re-applying: terraform import st-cloudflare_domain.<name> %s", domain, contactHint, importID))
 			return
 		}
-		resp.Diagnostics.Append(diagnosticErrorOf(err, "register domain [%s] failed%s", domain, contactHint))
+		resp.Diagnostics.Append(diagnosticErrorOf(err, "register domain [%s] failed%s%s", domain, contactHint, svc.unregistrableHint(ctx, domain)))
 		return
 	}
 
@@ -528,6 +528,55 @@ func (a *registrarAdapter) waitWorkflow(ctx context.Context, domainName string, 
 			interval *= 2
 		}
 	}
+}
+
+// unregistrableHint runs the registrar domain-check and returns an
+// explanation when the domain cannot be registered — e.g. it is already
+// registered at the registry, premium priced, or on an unsupported
+// extension. It returns an empty string when the domain is registrable or
+// the check cannot run; Cloudflare's own error message already explains
+// other failures.
+func (a *registrarAdapter) unregistrableHint(ctx context.Context, domainName string) string {
+	var registrable bool
+	var reason string
+	if a.sandbox {
+		resp, err := a.client.RegistrarSandbox.Check(ctx, registrar_sandbox.RegistrarSandboxCheckParams{
+			AccountID: cloudflare.F(a.accountID),
+			Domains:   cloudflare.F([]string{domainName}),
+		})
+		if err != nil {
+			return ""
+		}
+		for _, d := range resp.Domains {
+			if d.Name == domainName {
+				registrable, reason = d.Registrable, string(d.Reason)
+			}
+		}
+	} else {
+		resp, err := a.client.Registrar.Check(ctx, registrar.RegistrarCheckParams{
+			AccountID: cloudflare.F(a.accountID),
+			Domains:   cloudflare.F([]string{domainName}),
+		})
+		if err != nil {
+			return ""
+		}
+		for _, d := range resp.Domains {
+			if d.Name == domainName {
+				registrable, reason = d.Registrable, string(d.Reason)
+			}
+		}
+	}
+	switch {
+	case registrable:
+		return ""
+	case reason == "domain_unavailable":
+		return "; domain-check reports the domain as already registered, reserved, or otherwise taken at the registry — it cannot be purchased (transfer it in or choose another name)"
+	case reason == "domain_premium":
+		return "; domain-check reports the domain as premium priced, which the Registrar API cannot register"
+	case reason != "":
+		return fmt.Sprintf("; domain-check reports the domain as not registrable (%s)", reason)
+	}
+	return "; domain-check reports the domain as not registrable"
 }
 
 // domainStateOf builds the resource state from the plan plus the registration
