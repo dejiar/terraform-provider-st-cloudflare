@@ -360,12 +360,16 @@ func (a *registrarAdapter) createDomain(ctx context.Context, domainName string, 
 	if err := a.checkDomainPrice(ctx, domainName, maxPrice); err != nil {
 		return err
 	}
+	privacyMode := "off"
+	if privacy {
+		privacyMode = "redaction"
+	}
 	if a.sandbox {
 		params := registrar_sandbox.RegistrationNewParams{
 			AccountID:   cloudflare.F(a.accountID),
 			DomainName:  cloudflare.F(domainName),
 			AutoRenew:   cloudflare.F(autoRenew),
-			PrivacyMode: cloudflare.F(registrar_sandbox.RegistrationNewParamsPrivacyMode(privacyModeOf(privacy))),
+			PrivacyMode: cloudflare.F(registrar_sandbox.RegistrationNewParamsPrivacyMode(privacyMode)),
 			Contacts: cloudflare.F(registrar_sandbox.RegistrationNewParamsContacts{
 				Registrant: cloudflare.F(registrar_sandbox.RegistrationNewParamsContactsRegistrant{
 					Email: cloudflare.F("registrant@example.com"),
@@ -391,7 +395,7 @@ func (a *registrarAdapter) createDomain(ctx context.Context, domainName string, 
 		AccountID:   cloudflare.F(a.accountID),
 		DomainName:  cloudflare.F(domainName),
 		AutoRenew:   cloudflare.F(autoRenew),
-		PrivacyMode: cloudflare.F(registrar.RegistrationNewParamsPrivacyMode(privacyModeOf(privacy))),
+		PrivacyMode: cloudflare.F(registrar.RegistrationNewParamsPrivacyMode(privacyMode)),
 	}
 	params.Years = cloudflare.F(years)
 	_, err := a.client.Registrar.Registrations.New(ctx, params)
@@ -539,11 +543,4 @@ func (a *registrarAdapter) checkDomainPrice(ctx context.Context, domainName stri
 		return fmt.Errorf("registration price for domain [%s] is %.2f %s, which exceeds max_price %.2f; refusing to purchase", domainName, first, currency, maxPrice)
 	}
 	return nil
-}
-
-func privacyModeOf(privacy bool) string {
-	if privacy {
-		return "redaction"
-	}
-	return "off"
 }
