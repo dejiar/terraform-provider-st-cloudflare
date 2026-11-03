@@ -68,6 +68,7 @@ Optional:
 
 ## Notes
 
+- **Idempotency**: Cloudflare permits one registration per domain, so `terraform apply` on a domain that is already registered (e.g. after an earlier apply timed out but completed server-side) adopts the existing registration into state instead of attempting a second purchase.
 - **Updates**: the Cloudflare Registrar API supports updating `auto_renew` only. Changing `purchase_years`, `privacy`, or `registrant_contact` after creation produces an explicit error.
 - **Delete**: domain registrations cannot be deleted in Cloudflare. `terraform destroy` disables `auto_renew` (so the registration lapses at the end of its term instead of renewing) and removes the resource from state; the domain itself stays registered.
 - **Sandbox**: `use_sandbox = true` registers against `/registrar-sandbox/` — no billing, no real domains, `.com`/`.net` only, and sandbox purchases are persisted (a name bought there is not re-buyable in the sandbox). The `st-cloudflare_zone_type` resource is unaffected: zone operations always run against the production Cloudflare API.

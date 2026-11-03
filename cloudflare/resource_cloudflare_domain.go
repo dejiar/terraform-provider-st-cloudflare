@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
@@ -11,6 +12,7 @@ import (
 	"github.com/cloudflare/cloudflare-go/v7/registrar"
 	"github.com/cloudflare/cloudflare-go/v7/registrar_sandbox"
 	"github.com/hashicorp/terraform-plugin-framework-validators/int64validator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
@@ -317,10 +319,16 @@ func (r *cloudflareDomainResource) Schema(_ context.Context, _ resource.SchemaRe
 					"phone": &schema.StringAttribute{
 						MarkdownDescription: "Phone number in E.164 format, e.g. `+1.5555555555`.",
 						Required:            true,
+						Validators: []validator.String{
+							stringvalidator.RegexMatches(phoneNumberRegexp, "must be a phone number in E.164 format, e.g. `+1.5555555555` or `+15555555555`"),
+						},
 					},
 					"fax": &schema.StringAttribute{
 						MarkdownDescription: "Fax number in E.164 format. Optional.",
 						Optional:            true,
+						Validators: []validator.String{
+							stringvalidator.RegexMatches(phoneNumberRegexp, "must be a fax number in E.164 format, e.g. `+1.5555555555` or `+15555555555`"),
+						},
 					},
 					"name": &schema.StringAttribute{
 						MarkdownDescription: "Full legal name of the contact in one string, e.g. `Ada Lovelace`.",
@@ -349,6 +357,9 @@ func (r *cloudflareDomainResource) Schema(_ context.Context, _ resource.SchemaRe
 					"country_code": &schema.StringAttribute{
 						MarkdownDescription: "Two-letter country code per ISO 3166-1 alpha-2 (e.g. `US`).",
 						Required:            true,
+						Validators: []validator.String{
+							stringvalidator.RegexMatches(countryCodeRegexp, "must be an ISO 3166-1 alpha-2 country code, e.g. `US`"),
+						},
 					},
 				},
 			},
@@ -415,6 +426,21 @@ func (r *cloudflareDomainResource) Create(ctx context.Context, req resource.Crea
 	}
 
 	tflog.Info(ctx, fmt.Sprintf("Domain [%s] is registering...", domain))
+	// Cloudflare permits one registration per domain, which makes the domain
+	// name a natural idempotency key: adopt an existing registration (e.g.
+	// one left behind by an apply that timed out but completed server-side)
+	// instead of colliding with a second purchase attempt.
+	if existing, err := svc.GetRegistration(ctx, domain); err == nil && existing.status != "" {
+		tflog.Info(ctx, fmt.Sprintf("Domain [%s] is already registered (status: %s), adopting it", domain, existing.status))
+		domainStateInto(ctx, resp, plan, existing)
+		return
+	}
+
+	importID := fmt.Sprintf("%s/%s", accountID, domain)
+	if plan.UseSandbox.ValueBool() {
+		importID = "sandbox/" + importID
+	}
+
 	workflow, err := svc.CreateRegistration(ctx, opts)
 	if err != nil {
 		resp.Diagnostics.Append(diagnosticErrorOf(err, "register domain [%s] failed%s", domain, contactHint))
@@ -422,6 +448,20 @@ func (r *cloudflareDomainResource) Create(ctx context.Context, req resource.Crea
 	}
 
 	if _, err := waitRegistrationWorkflow(ctx, svc, domain, workflow, domainRegistrationTimeout); err != nil {
+		var timeoutErr *workflowTimeoutError
+		if errors.As(err, &timeoutErr) {
+			// A timeout is ambiguous: the workflow may still complete
+			// server-side. Adopt the registration if it is already there,
+			// otherwise point at import so the next apply cannot collide
+			// with a second purchase attempt.
+			if existing, gerr := svc.GetRegistration(ctx, domain); gerr == nil && existing.status != "" {
+				tflog.Info(ctx, fmt.Sprintf("Domain [%s] completed after the workflow wait timed out (status: %s), adopting it", domain, existing.status))
+				domainStateInto(ctx, resp, plan, existing)
+				return
+			}
+			resp.Diagnostics.Append(diagnosticErrorOf(err, "register domain [%s] failed%s; if the workflow completes later, import it instead of re-applying: terraform import st-cloudflare_domain.<name> %s", domain, contactHint, importID))
+			return
+		}
 		resp.Diagnostics.Append(diagnosticErrorOf(err, "register domain [%s] failed%s", domain, contactHint))
 		return
 	}
@@ -433,23 +473,27 @@ func (r *cloudflareDomainResource) Create(ctx context.Context, req resource.Crea
 	}
 	tflog.Info(ctx, fmt.Sprintf("Domain [%s] registered, expires at [%s]", domain, registration.expiresAt))
 
+	domainStateInto(ctx, resp, plan, registration)
+}
+
+// domainStateInto writes the created resource state from the plan and the
+// registration the API reports. Plan values win for fields the API never
+// returns or refuses to change (purchase_years, registrant_contact,
+// privacy) so a managed resource always converges on its configuration.
+func domainStateInto(ctx context.Context, resp *resource.CreateResponse, plan *cloudflareDomainModel, registration registrationView) {
 	state := cloudflareDomainModel{
 		AccountID:         plan.AccountID,
 		UseSandbox:        plan.UseSandbox,
 		Domain:            plan.Domain,
 		PurchaseYears:     plan.PurchaseYears,
 		AutoRenew:         plan.AutoRenew,
-		Privacy:           types.BoolValue(registration.privacy),
+		Privacy:           plan.Privacy,
 		RegistrantContact: plan.RegistrantContact,
 		DomainExpiryDate:  types.StringValue(registration.expiresAt),
 		Status:            types.StringValue(registration.status),
 	}
-
-	d2 := resp.State.Set(ctx, &state)
-	resp.Diagnostics.Append(d2...)
-	if resp.Diagnostics.HasError() {
-		return
-	}
+	diags := resp.State.Set(ctx, &state)
+	resp.Diagnostics.Append(diags...)
 }
 
 // Read
@@ -476,7 +520,11 @@ func (r *cloudflareDomainResource) Read(ctx context.Context, req resource.ReadRe
 	}
 
 	state.AutoRenew = types.BoolValue(registration.autoRenew)
-	state.Privacy = types.BoolValue(registration.privacy)
+	if state.Privacy.IsNull() {
+		// Privacy is chosen at purchase time and immutable; it is only
+		// unknown directly after an import.
+		state.Privacy = types.BoolValue(registration.privacy)
+	}
 	state.DomainExpiryDate = types.StringValue(registration.expiresAt)
 	state.Status = types.StringValue(registration.status)
 
@@ -621,6 +669,22 @@ func (r *cloudflareDomainResource) ImportState(ctx context.Context, req resource
 	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("use_sandbox"), useSandbox)...)
 }
 
+// workflowTimeoutError marks a workflow wait that ran out of time; the
+// workflow itself may still complete server-side.
+type workflowTimeoutError struct {
+	domain string
+	state  string
+	errMsg string
+}
+
+func (e *workflowTimeoutError) Error() string {
+	msg := fmt.Sprintf("timed out waiting for registration workflow of [%s] (state=%s)", e.domain, e.state)
+	if e.errMsg != "" {
+		msg += ": " + e.errMsg
+	}
+	return msg
+}
+
 // waitRegistrationWorkflow polls the registration status until the workflow
 // succeeds, reaches a state that needs user action, or the timeout is
 // exhausted.
@@ -640,13 +704,17 @@ func waitRegistrationWorkflow(ctx context.Context, svc registrarService, domain 
 			switch w.state {
 			case string(registrar.WorkflowStatusStateSucceeded):
 				return w, nil
-			case string(registrar.WorkflowStatusStateFailed), string(registrar.WorkflowStatusStateActionRequired):
-				return w, fmt.Errorf("registration workflow for [%s] state=%s: %s", domain, w.state, w.errMsg)
+			case string(registrar.WorkflowStatusStateFailed), string(registrar.WorkflowStatusStateActionRequired), string(registrar.WorkflowStatusStateBlocked):
+				hint := ""
+				if w.state == string(registrar.WorkflowStatusStateBlocked) {
+					hint = " — a third party such as the registry or a losing registrar is holding the workflow; if it resolves, re-applying adopts the existing registration"
+				}
+				return w, fmt.Errorf("registration workflow for [%s] state=%s: %s%s", domain, w.state, w.errMsg, hint)
 			}
 		}
 
 		if time.Now().After(deadline) {
-			return last, fmt.Errorf("timed out waiting for registration workflow of [%s] (state=%s)", domain, last.state)
+			return last, &workflowTimeoutError{domain: domain, state: last.state, errMsg: last.errMsg}
 		}
 
 		select {
@@ -659,6 +727,13 @@ func waitRegistrationWorkflow(ctx context.Context, svc registrarService, domain 
 		}
 	}
 }
+
+var (
+	// phoneNumberRegexp accepts strict E.164 (+15551234567) and Cloudflare's
+	// dotted variant (+1.5551234567).
+	phoneNumberRegexp = regexp.MustCompile(`^\+[1-9](\d{1,14}|\d{0,2}\.\d{1,14})$`)
+	countryCodeRegexp = regexp.MustCompile(`^[A-Za-z]{2}$`)
+)
 
 // registrantContact is the plain-value form of the contact model shared by
 // the production and sandbox adapters.
