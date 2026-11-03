@@ -39,6 +39,7 @@ The registrant contact is not part of the configuration: production registration
 ### Optional
 
 - `purchase_years` (Number) Registration term in years (1-10). Defaults to the registry's minimum period (1 year for most extensions). Cannot be changed after registration.
+- `max_price` (Number) Maximum price for the purchase. The provider checks the current registrar price before buying — first year at the registration cost, each extra year at the renewal cost — and refuses to purchase when the total exceeds this value. The Registrar API has no server-side price cap, so the check runs client-side; if the price cannot be verified, the purchase is refused.
 - `use_sandbox` (Boolean) Register through the Registrar Sandbox endpoints instead of the production Registrar: free test registrations (`.com`/`.net` only), no billing, no real domains. Defaults to `false`. Changing it forces replacement.
 
 ### Read-Only

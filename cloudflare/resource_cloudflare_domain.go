@@ -4,12 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/cloudflare/cloudflare-go/v7"
 	"github.com/cloudflare/cloudflare-go/v7/registrar"
 	"github.com/cloudflare/cloudflare-go/v7/registrar_sandbox"
+	"github.com/hashicorp/terraform-plugin-framework-validators/float64validator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/int64validator"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
@@ -34,14 +36,15 @@ type cloudflareDomainResource struct {
 }
 
 type cloudflareDomainModel struct {
-	AccountID        types.String `tfsdk:"account_id"`
-	UseSandbox       types.Bool   `tfsdk:"use_sandbox"`
-	Domain           types.String `tfsdk:"domain"`
-	PurchaseYears    types.Int64  `tfsdk:"purchase_years"`
-	AutoRenew        types.Bool   `tfsdk:"auto_renew"`
-	Privacy          types.Bool   `tfsdk:"privacy"`
-	DomainExpiryDate types.String `tfsdk:"domain_expiry_date"`
-	Status           types.String `tfsdk:"status"`
+	AccountID        types.String  `tfsdk:"account_id"`
+	UseSandbox       types.Bool    `tfsdk:"use_sandbox"`
+	Domain           types.String  `tfsdk:"domain"`
+	PurchaseYears    types.Int64   `tfsdk:"purchase_years"`
+	MaxPrice         types.Float64 `tfsdk:"max_price"`
+	AutoRenew        types.Bool    `tfsdk:"auto_renew"`
+	Privacy          types.Bool    `tfsdk:"privacy"`
+	DomainExpiryDate types.String  `tfsdk:"domain_expiry_date"`
+	Status           types.String  `tfsdk:"status"`
 }
 
 func NewCloudflareDomainResource() resource.Resource {
@@ -92,6 +95,15 @@ func (r *cloudflareDomainResource) Schema(_ context.Context, _ resource.SchemaRe
 				Optional: true,
 				Validators: []validator.Int64{
 					int64validator.Between(1, 10),
+				},
+			},
+			"max_price": &schema.Float64Attribute{
+				MarkdownDescription: "Maximum price for the purchase. The provider checks the current registrar " +
+					"price (first year plus any extra years at the renewal rate) and refuses to buy when it " +
+					"exceeds this value.",
+				Optional: true,
+				Validators: []validator.Float64{
+					float64validator.AtLeast(0),
 				},
 			},
 			"auto_renew": &schema.BoolAttribute{
@@ -167,6 +179,12 @@ func (r *cloudflareDomainResource) Create(ctx context.Context, req resource.Crea
 	years := int64(0)
 	if !plan.PurchaseYears.IsNull() {
 		years = plan.PurchaseYears.ValueInt64()
+	}
+	if !plan.MaxPrice.IsNull() {
+		if err := svc.ensurePriceWithin(ctx, domain, years, plan.MaxPrice.ValueFloat64()); err != nil {
+			resp.Diagnostics.Append(diagnosticErrorOf(err, "register domain [%s] failed", domain))
+			return
+		}
 	}
 	tflog.Info(ctx, fmt.Sprintf("Domain [%s] is registering...", domain))
 	if err := svc.registerDomain(ctx, domain, plan.AutoRenew.ValueBool(), plan.Privacy.ValueBool(), years); err != nil {
@@ -285,6 +303,7 @@ func (r *cloudflareDomainResource) Update(ctx context.Context, req resource.Upda
 		UseSandbox:    plan.UseSandbox,
 		Domain:        plan.Domain,
 		PurchaseYears: plan.PurchaseYears,
+		MaxPrice:      plan.MaxPrice,
 		Privacy:       plan.Privacy,
 	}
 	if err := svc.fillRegistration(ctx, domain, &newState); err != nil {
@@ -579,6 +598,71 @@ func (a *registrarAdapter) unregistrableHint(ctx context.Context, domainName str
 	return "; domain-check reports the domain as not registrable"
 }
 
+// ensurePriceWithin refuses the purchase when the current registrar price
+// exceeds maxPrice. The Registrar API has no server-side price cap, so
+// max_price is enforced with a domain-check before purchasing: first year
+// at the registration cost, each extra year at the renewal cost.
+func (a *registrarAdapter) ensurePriceWithin(ctx context.Context, domainName string, years int64, maxPrice float64) error {
+	var registrable, priced bool
+	var currency, registrationCost, renewalCost string
+	if a.sandbox {
+		resp, err := a.client.RegistrarSandbox.Check(ctx, registrar_sandbox.RegistrarSandboxCheckParams{
+			AccountID: cloudflare.F(a.accountID),
+			Domains:   cloudflare.F([]string{domainName}),
+		})
+		if err != nil {
+			return fmt.Errorf("price check for domain [%s] failed: %w", domainName, err)
+		}
+		for _, d := range resp.Domains {
+			if d.Name == domainName {
+				registrable, priced = d.Registrable, d.Pricing.RegistrationCost != ""
+				currency, registrationCost, renewalCost = d.Pricing.Currency, d.Pricing.RegistrationCost, d.Pricing.RenewalCost
+			}
+		}
+	} else {
+		resp, err := a.client.Registrar.Check(ctx, registrar.RegistrarCheckParams{
+			AccountID: cloudflare.F(a.accountID),
+			Domains:   cloudflare.F([]string{domainName}),
+		})
+		if err != nil {
+			return fmt.Errorf("price check for domain [%s] failed: %w", domainName, err)
+		}
+		for _, d := range resp.Domains {
+			if d.Name == domainName {
+				registrable, priced = d.Registrable, d.Pricing.RegistrationCost != ""
+				currency, registrationCost, renewalCost = d.Pricing.Currency, d.Pricing.RegistrationCost, d.Pricing.RenewalCost
+			}
+		}
+	}
+	if !registrable {
+		// The purchase itself will fail and explain why.
+		return nil
+	}
+	if !priced {
+		return fmt.Errorf("domain-check returned no pricing for domain [%s]; refusing to purchase because max_price cannot be verified", domainName)
+	}
+	first, err := strconv.ParseFloat(registrationCost, 64)
+	if err != nil {
+		return fmt.Errorf("domain-check returned an unparseable registration cost %q for domain [%s]", registrationCost, domainName)
+	}
+	renewal, err := strconv.ParseFloat(renewalCost, 64)
+	if err != nil {
+		return fmt.Errorf("domain-check returned an unparseable renewal cost %q for domain [%s]", renewalCost, domainName)
+	}
+	total := first
+	if years > 1 {
+		total += renewal * float64(years-1)
+	}
+	if total > maxPrice {
+		breakdown := ""
+		if years > 1 {
+			breakdown = fmt.Sprintf(" (%.2f registration + %d x %.2f renewal)", first, years-1, renewal)
+		}
+		return fmt.Errorf("registration price for domain [%s] is %.2f %s%s, which exceeds max_price %.2f; refusing to purchase", domainName, total, currency, breakdown, maxPrice)
+	}
+	return nil
+}
+
 // domainStateOf builds the resource state from the plan plus the registration
 // the API reports. Plan values win for fields the API never returns or
 // refuses to change (purchase_years, privacy) so a managed resource always
@@ -589,6 +673,7 @@ func domainStateOf(ctx context.Context, svc *registrarAdapter, plan *cloudflareD
 		UseSandbox:    plan.UseSandbox,
 		Domain:        plan.Domain,
 		PurchaseYears: plan.PurchaseYears,
+		MaxPrice:      plan.MaxPrice,
 		AutoRenew:     plan.AutoRenew,
 		Privacy:       plan.Privacy,
 	}
