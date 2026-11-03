@@ -45,7 +45,7 @@ func NewCloudflareDomainResource() resource.Resource {
 	return &cloudflareDomainResource{}
 }
 
-type registrantContactModel struct {
+type registrantContactState struct {
 	Email        types.String `tfsdk:"email"`
 	Phone        types.String `tfsdk:"phone"`
 	Fax          types.String `tfsdk:"fax"`
@@ -58,14 +58,14 @@ type registrantContactModel struct {
 	CountryCode  types.String `tfsdk:"country_code"`
 }
 
-type cloudflareDomainModel struct {
+type cloudflareDomainState struct {
 	AccountID         types.String            `tfsdk:"account_id"`
 	UseSandbox        types.Bool              `tfsdk:"use_sandbox"`
 	Domain            types.String            `tfsdk:"domain"`
 	PurchaseYears     types.Int64             `tfsdk:"purchase_years"`
 	AutoRenew         types.Bool              `tfsdk:"auto_renew"`
 	Privacy           types.Bool              `tfsdk:"privacy"`
-	RegistrantContact *registrantContactModel `tfsdk:"registrant_contact"`
+	RegistrantContact *registrantContactState `tfsdk:"registrant_contact"`
 	DomainExpiryDate  types.String            `tfsdk:"domain_expiry_date"`
 	Status            types.String            `tfsdk:"status"`
 }
@@ -93,7 +93,7 @@ type createRegistrationOptions struct {
 	autoRenew  bool
 	privacy    bool
 	years      int64
-	contact    *registrantContactModel
+	contact    *registrantContactState
 }
 
 // registrarAdapter talks to the Registrar API: the production endpoints
@@ -383,7 +383,7 @@ func (r *cloudflareDomainResource) Configure(_ context.Context, req resource.Con
 
 // Create
 func (r *cloudflareDomainResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
-	var plan *cloudflareDomainModel
+	var plan *cloudflareDomainState
 	d := req.Plan.Get(ctx, &plan)
 	resp.Diagnostics.Append(d...)
 	if resp.Diagnostics.HasError() {
@@ -469,8 +469,8 @@ func (r *cloudflareDomainResource) Create(ctx context.Context, req resource.Crea
 // registration the API reports. Plan values win for fields the API never
 // returns or refuses to change (purchase_years, registrant_contact,
 // privacy) so a managed resource always converges on its configuration.
-func domainStateInto(ctx context.Context, resp *resource.CreateResponse, plan *cloudflareDomainModel, registration registrationView) {
-	state := cloudflareDomainModel{
+func domainStateInto(ctx context.Context, resp *resource.CreateResponse, plan *cloudflareDomainState, registration registrationView) {
+	state := cloudflareDomainState{
 		AccountID:         plan.AccountID,
 		UseSandbox:        plan.UseSandbox,
 		Domain:            plan.Domain,
@@ -487,7 +487,7 @@ func domainStateInto(ctx context.Context, resp *resource.CreateResponse, plan *c
 
 // Read
 func (r *cloudflareDomainResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
-	var state *cloudflareDomainModel
+	var state *cloudflareDomainState
 	d := req.State.Get(ctx, &state)
 	resp.Diagnostics.Append(d...)
 	if resp.Diagnostics.HasError() {
@@ -526,14 +526,14 @@ func (r *cloudflareDomainResource) Read(ctx context.Context, req resource.ReadRe
 
 // Update
 func (r *cloudflareDomainResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
-	var plan *cloudflareDomainModel
+	var plan *cloudflareDomainState
 	d := req.Plan.Get(ctx, &plan)
 	resp.Diagnostics.Append(d...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
 
-	var state *cloudflareDomainModel
+	var state *cloudflareDomainState
 	d = req.State.Get(ctx, &state)
 	resp.Diagnostics.Append(d...)
 	if resp.Diagnostics.HasError() {
@@ -587,7 +587,7 @@ func (r *cloudflareDomainResource) Update(ctx context.Context, req resource.Upda
 		return
 	}
 
-	newState := cloudflareDomainModel{
+	newState := cloudflareDomainState{
 		AccountID:         plan.AccountID,
 		UseSandbox:        plan.UseSandbox,
 		Domain:            plan.Domain,
@@ -608,7 +608,7 @@ func (r *cloudflareDomainResource) Update(ctx context.Context, req resource.Upda
 
 // Delete
 func (r *cloudflareDomainResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
-	var state *cloudflareDomainModel
+	var state *cloudflareDomainState
 	getStateDiags := req.State.Get(ctx, &state)
 	resp.Diagnostics.Append(getStateDiags...)
 	if resp.Diagnostics.HasError() {
@@ -724,7 +724,7 @@ var (
 	countryCodeRegexp = regexp.MustCompile(`^[A-Za-z]{2}$`)
 )
 
-// registrantContact is the plain-value form of the contact model shared by
+// registrantContact is the plain-value form of the contact state shared by
 // the production and sandbox adapters.
 type registrantContact struct {
 	email, phone, fax       string
@@ -733,7 +733,7 @@ type registrantContact struct {
 	postalCode, countryCode string
 }
 
-func contactOf(m *registrantContactModel) registrantContact {
+func contactOf(m *registrantContactState) registrantContact {
 	return registrantContact{
 		email:        m.Email.ValueString(),
 		phone:        m.Phone.ValueString(),
@@ -757,9 +757,9 @@ func privacyModeOf(privacy bool) string {
 
 // sandboxPlaceholderContact returns a format-valid, obviously fake contact
 // used when a sandbox registration omits registrant_contact.
-func sandboxPlaceholderContact() *registrantContactModel {
+func sandboxPlaceholderContact() *registrantContactState {
 	str := types.StringValue
-	return &registrantContactModel{
+	return &registrantContactState{
 		Email:       str("registrant@example.com"),
 		Phone:       str("+1.5555555555"),
 		Name:        str("Sandbox Registrant"),
@@ -784,7 +784,7 @@ func registrationOf(autoRenew bool, privacyMode string, expiresAt time.Time, sta
 	}
 }
 
-func registrantContactEqual(a *registrantContactModel, b *registrantContactModel) bool {
+func registrantContactEqual(a *registrantContactState, b *registrantContactState) bool {
 	// A nil side is unknown/unmanaged (e.g. after an import, since the API
 	// never returns contacts), not a difference — the caller adopts the
 	// planned value.
