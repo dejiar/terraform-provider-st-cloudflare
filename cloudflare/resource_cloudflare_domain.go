@@ -164,10 +164,6 @@ func (r *cloudflareDomainResource) Create(ctx context.Context, req resource.Crea
 	privacy := plan.Privacy.ValueBool()
 
 	svc := &registrarAdapter{client: r.client, accountID: accountID, sandbox: useSandbox}
-	importID := fmt.Sprintf("%s/%s", accountID, domain)
-	if useSandbox {
-		importID = "sandbox/" + importID
-	}
 
 	// The registrant contact comes from the account's address book; when
 	// the account has none, tell the user what to complete.
@@ -187,7 +183,7 @@ func (r *cloudflareDomainResource) Create(ctx context.Context, req resource.Crea
 		if state, gerr := domainStateOf(ctx, svc, plan); gerr == nil && state.Status.ValueString() != "" {
 			resp.Diagnostics.AddError(
 				fmt.Sprintf("register domain [%s] failed", domain),
-				fmt.Sprintf("%s\n\nThe domain is already registered under this account (status: %s); it was not adopted automatically. Import it into Terraform state instead: terraform import st-cloudflare_domain.<name> %s", err, state.Status.ValueString(), importID),
+				fmt.Sprintf("%s\n\nThe domain is already registered under this account (status: %s); it was not adopted automatically. Import it into Terraform state instead.", err, state.Status.ValueString()),
 			)
 			return
 		}
@@ -205,7 +201,7 @@ func (r *cloudflareDomainResource) Create(ctx context.Context, req resource.Crea
 				resp.Diagnostics.Append(resp.State.Set(ctx, state)...)
 				return
 			}
-			resp.Diagnostics.Append(diagnosticErrorOf(err, "register domain [%s] failed%s; if the workflow completes later, import it instead of re-applying: terraform import st-cloudflare_domain.<name> %s", domain, contactHint, importID))
+			resp.Diagnostics.Append(diagnosticErrorOf(err, "register domain [%s] failed%s; if the workflow completes later, import it instead of re-applying", domain, contactHint))
 			return
 		}
 		resp.Diagnostics.Append(diagnosticErrorOf(err, "register domain [%s] failed", domain))
