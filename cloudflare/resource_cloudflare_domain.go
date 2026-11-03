@@ -186,10 +186,12 @@ func (r *cloudflareDomainResource) Create(ctx context.Context, req resource.Crea
 		AutoRenew:     plan.AutoRenew,
 		Privacy:       plan.Privacy,
 	}
-	if err := svc.getDomainInfo(ctx, domain, state); err != nil {
+	_, _, expiry, err := svc.getDomainInfo(ctx, domain)
+	if err != nil {
 		resp.Diagnostics.Append(diagnosticErrorOf(err, "fetch registration for domain [%s] failed", domain))
 		return
 	}
+	state.DomainExpiryDate = types.StringValue(expiry)
 	tflog.Info(ctx, fmt.Sprintf("Domain [%s] registered, expires at [%s]", domain, state.DomainExpiryDate.ValueString()))
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, state)...)
@@ -207,7 +209,8 @@ func (r *cloudflareDomainResource) Read(ctx context.Context, req resource.ReadRe
 	accountID := state.AccountID.ValueString()
 	domain := state.Domain.ValueString()
 	svc := &registrarAdapter{client: r.client, accountID: accountID, sandbox: state.UseSandbox.ValueBool()}
-	if err := svc.getDomainInfo(ctx, domain, state); err != nil {
+	autoRenew, privacy, expiry, err := svc.getDomainInfo(ctx, domain)
+	if err != nil {
 		var apiErr *cloudflare.Error
 		if errors.As(err, &apiErr) && apiErr.StatusCode == 404 {
 			resp.State.RemoveResource(ctx)
@@ -216,6 +219,11 @@ func (r *cloudflareDomainResource) Read(ctx context.Context, req resource.ReadRe
 		}
 		return
 	}
+	state.AutoRenew = types.BoolValue(autoRenew)
+	if state.Privacy.IsNull() {
+		state.Privacy = types.BoolValue(privacy == "redaction")
+	}
+	state.DomainExpiryDate = types.StringValue(expiry)
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, state)...)
 }
@@ -278,10 +286,13 @@ func (r *cloudflareDomainResource) Update(ctx context.Context, req resource.Upda
 		AutoRenew:     plan.AutoRenew,
 		Privacy:       plan.Privacy,
 	}
-	if err := svc.getDomainInfo(ctx, domain, newState); err != nil {
+	autoRenew, _, expiry, err := svc.getDomainInfo(ctx, domain)
+	if err != nil {
 		resp.Diagnostics.Append(diagnosticErrorOf(err, "fetch registration for domain [%s] failed", domain))
 		return
 	}
+	newState.AutoRenew = types.BoolValue(autoRenew)
+	newState.DomainExpiryDate = types.StringValue(expiry)
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, newState)...)
 }
@@ -409,41 +420,34 @@ func (a *registrarAdapter) setAutoRenew(ctx context.Context, domainName string, 
 	return a.waitWorkflow(ctx, domainName, timeout)
 }
 
-// getDomainInfo copies the registration the API reports into the state's
-// computed fields. Privacy is filled only when unknown (directly after an
-// import): it is chosen at purchase time and immutable, so a managed
-// resource always keeps the value from its configuration.
-func (a *registrarAdapter) getDomainInfo(ctx context.Context, domainName string, state *cloudflareDomainModel) error {
-	var autoRenew bool
-	var privacyMode string
-	var expiresAt time.Time
+// getDomainInfo fetches the registration the API reports and returns its
+// auto_renew flag, privacy mode, and expiry date.
+func (a *registrarAdapter) getDomainInfo(ctx context.Context, domainName string) (autoRenew bool, privacy string, expiresAt string, err error) {
 	if a.sandbox {
 		reg, err := a.client.RegistrarSandbox.Registrations.Get(ctx, domainName, registrar_sandbox.RegistrationGetParams{
 			AccountID: cloudflare.F(a.accountID),
 		})
 		if err != nil {
-			return err
+			return false, "", "", err
 		}
-		autoRenew, privacyMode, expiresAt = reg.AutoRenew, string(reg.PrivacyMode), reg.ExpiresAt
-	} else {
-		reg, err := a.client.Registrar.Registrations.Get(ctx, domainName, registrar.RegistrationGetParams{
-			AccountID: cloudflare.F(a.accountID),
-		})
-		if err != nil {
-			return err
-		}
-		autoRenew, privacyMode, expiresAt = reg.AutoRenew, string(reg.PrivacyMode), reg.ExpiresAt
+		return reg.AutoRenew, string(reg.PrivacyMode), formatExpiry(reg.ExpiresAt), nil
 	}
-	state.AutoRenew = types.BoolValue(autoRenew)
-	if state.Privacy.IsNull() {
-		state.Privacy = types.BoolValue(privacyMode == "redaction")
+	reg, err := a.client.Registrar.Registrations.Get(ctx, domainName, registrar.RegistrationGetParams{
+		AccountID: cloudflare.F(a.accountID),
+	})
+	if err != nil {
+		return false, "", "", err
 	}
-	expiry := ""
-	if !expiresAt.IsZero() {
-		expiry = expiresAt.Format(time.RFC3339)
+	return reg.AutoRenew, string(reg.PrivacyMode), formatExpiry(reg.ExpiresAt), nil
+}
+
+// formatExpiry renders the API expiry time, with an empty string when the
+// API reports none.
+func formatExpiry(t time.Time) string {
+	if t.IsZero() {
+		return ""
 	}
-	state.DomainExpiryDate = types.StringValue(expiry)
-	return nil
+	return t.Format(time.RFC3339)
 }
 
 // workflowStatus fetches the current registration workflow status once.
