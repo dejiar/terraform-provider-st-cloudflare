@@ -176,12 +176,29 @@ func (r *cloudflareDomainResource) Create(ctx context.Context, req resource.Crea
 			return
 		}
 	}
+	importID := fmt.Sprintf("%s/%s", accountID, domain)
+	if useSandbox {
+		importID = "sandbox/" + importID
+	}
 	tflog.Info(ctx, fmt.Sprintf("Domain [%s] is registering...", domain))
-	if err := svc.registerDomain(ctx, domain, plan.AutoRenew.ValueBool(), plan.Privacy.ValueBool(), years); err != nil {
-		importID := fmt.Sprintf("%s/%s", accountID, domain)
-		if useSandbox {
-			importID = "sandbox/" + importID
+	createDomain := func() error {
+		return svc.createDomain(ctx, domain, plan.AutoRenew.ValueBool(), plan.Privacy.ValueBool(), years)
+	}
+	if err := retry(ctx, createDomain); err != nil {
+		// The purchase was rejected. When this account already holds the
+		// registration, importing it beats a confusing not-available error;
+		// otherwise let the unregistrable hint explain whose it is.
+		if state, gerr := domainStateOf(ctx, svc, plan); gerr == nil && state.Status.ValueString() != "" {
+			resp.Diagnostics.AddError(
+				fmt.Sprintf("register domain [%s] failed", domain),
+				fmt.Sprintf("%s\n\nThe domain is already registered under this account (status: %s); it was not adopted automatically. Import it into Terraform state instead: terraform import st-cloudflare_domain.<name> %s", err, state.Status.ValueString(), importID),
+			)
+			return
 		}
+		resp.Diagnostics.Append(diagnosticErrorOf(err, "register domain [%s] failed%s%s", domain, contactHint, svc.unregistrableHint(ctx, domain)))
+		return
+	}
+	if err := svc.waitWorkflow(ctx, domain, domainRegistrationTimeout); err != nil {
 		var timeoutErr *workflowTimeoutError
 		if errors.As(err, &timeoutErr) {
 			// A timeout is ambiguous: the workflow may still complete
@@ -195,17 +212,7 @@ func (r *cloudflareDomainResource) Create(ctx context.Context, req resource.Crea
 			resp.Diagnostics.Append(diagnosticErrorOf(err, "register domain [%s] failed%s; if the workflow completes later, import it instead of re-applying: terraform import st-cloudflare_domain.<name> %s", domain, contactHint, importID))
 			return
 		}
-		// The purchase was rejected. When this account already holds the
-		// registration, importing it beats a confusing not-available error;
-		// otherwise let the unregistrable hint explain whose it is.
-		if state, gerr := domainStateOf(ctx, svc, plan); gerr == nil && state.Status.ValueString() != "" {
-			resp.Diagnostics.AddError(
-				fmt.Sprintf("register domain [%s] failed", domain),
-				fmt.Sprintf("%s\n\nThe domain is already registered under this account (status: %s); it was not adopted automatically. Import it into Terraform state instead: terraform import st-cloudflare_domain.<name> %s", err, state.Status.ValueString(), importID),
-			)
-			return
-		}
-		resp.Diagnostics.Append(diagnosticErrorOf(err, "register domain [%s] failed%s%s", domain, contactHint, svc.unregistrableHint(ctx, domain)))
+		resp.Diagnostics.Append(diagnosticErrorOf(err, "register domain [%s] failed", domain))
 		return
 	}
 
@@ -373,9 +380,9 @@ type registrarAdapter struct {
 	sandbox   bool
 }
 
-// registerDomain purchases the domain (or simulates the purchase in the
-// sandbox), retrying failures, and waits for the workflow to finish.
-func (a *registrarAdapter) registerDomain(ctx context.Context, domainName string, autoRenew, privacy bool, years int64) error {
+// createDomain purchases the domain (or simulates the purchase in the
+// sandbox); retrying and waiting for the workflow are the caller's job.
+func (a *registrarAdapter) createDomain(ctx context.Context, domainName string, autoRenew, privacy bool, years int64) error {
 	if a.sandbox {
 		params := registrar_sandbox.RegistrationNewParams{
 			AccountID:   cloudflare.F(a.accountID),
@@ -402,13 +409,8 @@ func (a *registrarAdapter) registerDomain(ctx context.Context, domainName string
 		if years > 0 {
 			params.Years = cloudflare.F(years)
 		}
-		ws, err := retry(ctx, func() (*registrar_sandbox.RegistrationNewResponse, error) {
-			return a.client.RegistrarSandbox.Registrations.New(ctx, params)
-		})
-		if err != nil {
-			return err
-		}
-		return a.waitWorkflow(ctx, domainName, ws.Completed, string(ws.State), ws.Error.Message, domainRegistrationTimeout)
+		_, err := a.client.RegistrarSandbox.Registrations.New(ctx, params)
+		return err
 	}
 	params := registrar.RegistrationNewParams{
 		AccountID:   cloudflare.F(a.accountID),
@@ -419,35 +421,30 @@ func (a *registrarAdapter) registerDomain(ctx context.Context, domainName string
 	if years > 0 {
 		params.Years = cloudflare.F(years)
 	}
-	ws, err := retry(ctx, func() (*registrar.WorkflowStatus, error) {
-		return a.client.Registrar.Registrations.New(ctx, params)
-	})
-	if err != nil {
-		return err
-	}
-	return a.waitWorkflow(ctx, domainName, ws.Completed, string(ws.State), ws.Error.Message, domainRegistrationTimeout)
+	_, err := a.client.Registrar.Registrations.New(ctx, params)
+	return err
 }
 
 // setAutoRenew flips auto_renew and waits for the workflow to finish.
 func (a *registrarAdapter) setAutoRenew(ctx context.Context, domainName string, autoRenew bool, timeout time.Duration) error {
 	if a.sandbox {
-		ws, err := a.client.RegistrarSandbox.Registrations.Edit(ctx, domainName, registrar_sandbox.RegistrationEditParams{
+		_, err := a.client.RegistrarSandbox.Registrations.Edit(ctx, domainName, registrar_sandbox.RegistrationEditParams{
 			AccountID: cloudflare.F(a.accountID),
 			AutoRenew: cloudflare.F(autoRenew),
 		})
 		if err != nil {
 			return err
 		}
-		return a.waitWorkflow(ctx, domainName, ws.Completed, string(ws.State), ws.Error.Message, timeout)
+		return a.waitWorkflow(ctx, domainName, timeout)
 	}
-	ws, err := a.client.Registrar.Registrations.Edit(ctx, domainName, registrar.RegistrationEditParams{
+	_, err := a.client.Registrar.Registrations.Edit(ctx, domainName, registrar.RegistrationEditParams{
 		AccountID: cloudflare.F(a.accountID),
 		AutoRenew: cloudflare.F(autoRenew),
 	})
 	if err != nil {
 		return err
 	}
-	return a.waitWorkflow(ctx, domainName, ws.Completed, string(ws.State), ws.Error.Message, timeout)
+	return a.waitWorkflow(ctx, domainName, timeout)
 }
 
 // fillRegistration copies the registration the API reports into the state's
@@ -511,23 +508,20 @@ func (a *registrarAdapter) workflowStatus(ctx context.Context, domainName string
 
 // waitWorkflow polls the workflow status until it succeeds, reaches a state
 // that needs user action, or the timeout is exhausted.
-func (a *registrarAdapter) waitWorkflow(ctx context.Context, domainName string, completed bool, state, errMsg string, timeout time.Duration) error {
-	if completed && state == string(registrar.WorkflowStatusStateSucceeded) {
-		return nil
-	}
+func (a *registrarAdapter) waitWorkflow(ctx context.Context, domainName string, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	interval := 2 * time.Second
+	var state, errMsg string
 	for {
-		wCompleted, wState, wErrMsg, err := a.workflowStatus(ctx, domainName)
-		if err == nil {
-			completed, state, errMsg = wCompleted, wState, wErrMsg
+		if _, wState, wErrMsg, err := a.workflowStatus(ctx, domainName); err == nil {
+			state, errMsg = wState, wErrMsg
 			switch state {
 			case string(registrar.WorkflowStatusStateSucceeded):
 				return nil
 			case string(registrar.WorkflowStatusStateFailed), string(registrar.WorkflowStatusStateActionRequired), string(registrar.WorkflowStatusStateBlocked):
 				hint := ""
 				if state == string(registrar.WorkflowStatusStateBlocked) {
-					hint = " — a third party such as the registry or a losing registrar is holding the workflow; if it resolves, re-applying adopts the existing registration"
+					hint = " — a third party such as the registry or a losing registrar is holding the workflow; if it later resolves, import the registration instead of re-applying"
 				}
 				return fmt.Errorf("registration workflow for [%s] state=%s: %s%s", domainName, state, errMsg, hint)
 			}
@@ -710,18 +704,18 @@ func privacyModeOf(privacy bool) string {
 // retry retries a failed call with exponential backoff, capping the total
 // wait around 30s — the same behavior as the namecheap provider's
 // createDomain retry.
-func retry[T any](ctx context.Context, f func() (T, error)) (T, error) {
-	result, err := f()
+func retry(ctx context.Context, f func() error) error {
+	err := f()
 	for delay := 500 * time.Millisecond; err != nil; delay *= 2 {
 		if delay > 16*time.Second {
-			return result, err
+			return err
 		}
 		select {
 		case <-ctx.Done():
-			return result, err
+			return err
 		case <-time.After(delay):
 		}
-		result, err = f()
+		err = f()
 	}
-	return result, nil
+	return nil
 }
