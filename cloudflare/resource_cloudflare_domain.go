@@ -159,16 +159,6 @@ func (r *cloudflareDomainResource) Create(ctx context.Context, req resource.Crea
 	svc := &registrarAdapter{client: r.client, accountID: accountID, sandbox: useSandbox}
 	domain := plan.Domain.ValueString()
 
-	// Cloudflare permits one registration per domain, which makes the domain
-	// name a natural idempotency key: adopt an existing registration (e.g.
-	// one left behind by an apply that timed out but completed server-side)
-	// instead of colliding with a second purchase attempt.
-	if state, err := domainStateOf(ctx, svc, plan); err == nil && state.Status.ValueString() != "" {
-		tflog.Info(ctx, fmt.Sprintf("Domain [%s] is already registered (status: %s), adopting it", domain, state.Status.ValueString()))
-		resp.Diagnostics.Append(resp.State.Set(ctx, state)...)
-		return
-	}
-
 	// The registrant contact comes from the account's address book; when
 	// the account has none, tell the user what to complete.
 	contactHint := ""
@@ -188,22 +178,31 @@ func (r *cloudflareDomainResource) Create(ctx context.Context, req resource.Crea
 	}
 	tflog.Info(ctx, fmt.Sprintf("Domain [%s] is registering...", domain))
 	if err := svc.registerDomain(ctx, domain, plan.AutoRenew.ValueBool(), plan.Privacy.ValueBool(), years); err != nil {
+		importID := fmt.Sprintf("%s/%s", accountID, domain)
+		if useSandbox {
+			importID = "sandbox/" + importID
+		}
 		var timeoutErr *workflowTimeoutError
 		if errors.As(err, &timeoutErr) {
-			importID := fmt.Sprintf("%s/%s", accountID, domain)
-			if useSandbox {
-				importID = "sandbox/" + importID
-			}
 			// A timeout is ambiguous: the workflow may still complete
 			// server-side. Adopt the registration if it is already there,
-			// otherwise point at import so the next apply cannot collide
-			// with a second purchase attempt.
+			// otherwise wait for the workflow to finish and import it.
 			if state, gerr := domainStateOf(ctx, svc, plan); gerr == nil && state.Status.ValueString() != "" {
 				tflog.Info(ctx, fmt.Sprintf("Domain [%s] completed after the workflow wait timed out (status: %s), adopting it", domain, state.Status.ValueString()))
 				resp.Diagnostics.Append(resp.State.Set(ctx, state)...)
 				return
 			}
 			resp.Diagnostics.Append(diagnosticErrorOf(err, "register domain [%s] failed%s; if the workflow completes later, import it instead of re-applying: terraform import st-cloudflare_domain.<name> %s", domain, contactHint, importID))
+			return
+		}
+		// The purchase was rejected. When this account already holds the
+		// registration, importing it beats a confusing not-available error;
+		// otherwise let the unregistrable hint explain whose it is.
+		if state, gerr := domainStateOf(ctx, svc, plan); gerr == nil && state.Status.ValueString() != "" {
+			resp.Diagnostics.AddError(
+				fmt.Sprintf("register domain [%s] failed", domain),
+				fmt.Sprintf("%s\n\nThe domain is already registered under this account (status: %s); it was not adopted automatically. Import it into Terraform state instead: terraform import st-cloudflare_domain.<name> %s", err, state.Status.ValueString(), importID),
+			)
 			return
 		}
 		resp.Diagnostics.Append(diagnosticErrorOf(err, "register domain [%s] failed%s%s", domain, contactHint, svc.unregistrableHint(ctx, domain)))
