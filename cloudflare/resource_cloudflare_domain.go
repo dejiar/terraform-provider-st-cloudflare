@@ -48,10 +48,12 @@ type cloudflareDomainModel struct {
 	UseSandbox       types.Bool   `tfsdk:"use_sandbox"`
 	Domain           types.String `tfsdk:"domain"`
 	PurchaseYears    types.Int64  `tfsdk:"purchase_years"`
+	MinDaysRemaining types.Int64  `tfsdk:"min_days_remaining"`
 	AutoRenew        types.Bool   `tfsdk:"auto_renew"`
 	Privacy          types.Bool   `tfsdk:"privacy"`
 	DomainExpiryDate types.String `tfsdk:"domain_expiry_date"`
 	Status           types.String `tfsdk:"status"`
+	RequiredRenew    types.Bool   `tfsdk:"required_renew"`
 }
 
 // registrarAdapter talks to the Registrar API for one account: production
@@ -171,6 +173,13 @@ func (a *registrarAdapter) fillRegistration(ctx context.Context, domainName stri
 	}
 	state.DomainExpiryDate = types.StringValue(expiry)
 	state.Status = types.StringValue(status)
+	requiredRenew := false
+	if !expiresAt.IsZero() {
+		// Renewal action is required once the domain expires within the
+		// configured window (min_days_remaining, 0 when unset).
+		requiredRenew = int64(expiresAt.Sub(time.Now()).Hours()/24) <= state.MinDaysRemaining.ValueInt64()
+	}
+	state.RequiredRenew = types.BoolValue(requiredRenew)
 	return nil
 }
 
@@ -277,6 +286,11 @@ func (r *cloudflareDomainResource) Schema(_ context.Context, _ resource.SchemaRe
 					int64validator.Between(1, 10),
 				},
 			},
+			"min_days_remaining": &schema.Int64Attribute{
+				MarkdownDescription: "Renewal window threshold in days: `required_renew` becomes `true` when the " +
+					"domain expires within this many days. Defaults to `0` (only expired domains are flagged).",
+				Optional: true,
+			},
 			"auto_renew": &schema.BoolAttribute{
 				MarkdownDescription: "Whether the domain is automatically renewed before expiration. " +
 					"Setting `true` authorizes Cloudflare to charge the account's default payment method up to 30 days " +
@@ -295,6 +309,10 @@ func (r *cloudflareDomainResource) Schema(_ context.Context, _ resource.SchemaRe
 			},
 			"status": &schema.StringAttribute{
 				MarkdownDescription: "Registration status, e.g. `active`, `expired`, `suspended`.",
+				Computed:            true,
+			},
+			"required_renew": &schema.BoolAttribute{
+				MarkdownDescription: "A boolean flag to keep track of whether domain renewal action is required.",
 				Computed:            true,
 			},
 		},
@@ -391,12 +409,13 @@ func (r *cloudflareDomainResource) Create(ctx context.Context, req resource.Crea
 // converges on its configuration.
 func domainStateOf(ctx context.Context, svc *registrarAdapter, plan *cloudflareDomainModel) (*cloudflareDomainModel, error) {
 	state := &cloudflareDomainModel{
-		AccountID:     plan.AccountID,
-		UseSandbox:    plan.UseSandbox,
-		Domain:        plan.Domain,
-		PurchaseYears: plan.PurchaseYears,
-		AutoRenew:     plan.AutoRenew,
-		Privacy:       plan.Privacy,
+		AccountID:        plan.AccountID,
+		UseSandbox:       plan.UseSandbox,
+		Domain:           plan.Domain,
+		PurchaseYears:    plan.PurchaseYears,
+		MinDaysRemaining: plan.MinDaysRemaining,
+		AutoRenew:        plan.AutoRenew,
+		Privacy:          plan.Privacy,
 	}
 	if err := svc.fillRegistration(ctx, plan.Domain.ValueString(), state); err != nil {
 		return nil, err
@@ -487,11 +506,12 @@ func (r *cloudflareDomainResource) Update(ctx context.Context, req resource.Upda
 	}
 
 	newState := cloudflareDomainModel{
-		AccountID:     plan.AccountID,
-		UseSandbox:    plan.UseSandbox,
-		Domain:        plan.Domain,
-		PurchaseYears: plan.PurchaseYears,
-		Privacy:       plan.Privacy,
+		AccountID:        plan.AccountID,
+		UseSandbox:       plan.UseSandbox,
+		Domain:           plan.Domain,
+		PurchaseYears:    plan.PurchaseYears,
+		MinDaysRemaining: plan.MinDaysRemaining,
+		Privacy:          plan.Privacy,
 	}
 	if err := svc.fillRegistration(ctx, domain, &newState); err != nil {
 		resp.Diagnostics.Append(diagnosticErrorOf(err, "fetch registration for domain [%s] failed", domain))
