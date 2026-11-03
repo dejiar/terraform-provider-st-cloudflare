@@ -156,7 +156,7 @@ func (r *cloudflareDomainResource) Create(ctx context.Context, req resource.Crea
 
 	accountID := plan.AccountID.ValueString()
 	useSandbox := plan.UseSandbox.ValueBool()
-	svc := r.registrarFor(accountID, useSandbox)
+	svc := &registrarAdapter{client: r.client, accountID: accountID, sandbox: useSandbox}
 	domain := plan.Domain.ValueString()
 
 	// Cloudflare permits one registration per domain, which makes the domain
@@ -230,7 +230,7 @@ func (r *cloudflareDomainResource) Read(ctx context.Context, req resource.ReadRe
 	}
 
 	accountID := state.AccountID.ValueString()
-	svc := r.registrarFor(accountID, state.UseSandbox.ValueBool())
+	svc := &registrarAdapter{client: r.client, accountID: accountID, sandbox: state.UseSandbox.ValueBool()}
 	domain := state.Domain.ValueString()
 	if err := svc.fillRegistration(ctx, domain, state); err != nil {
 		var apiErr *cloudflare.Error
@@ -266,7 +266,7 @@ func (r *cloudflareDomainResource) Update(ctx context.Context, req resource.Upda
 	}
 
 	accountID := plan.AccountID.ValueString()
-	svc := r.registrarFor(accountID, plan.UseSandbox.ValueBool())
+	svc := &registrarAdapter{client: r.client, accountID: accountID, sandbox: plan.UseSandbox.ValueBool()}
 	domain := plan.Domain.ValueString()
 
 	// The Registrar API supports updating auto_renew only; everything else is
@@ -332,7 +332,7 @@ func (r *cloudflareDomainResource) Delete(ctx context.Context, req resource.Dele
 	// it off so the registration simply lapses at the end of its term.
 	domain := state.Domain.ValueString()
 	if state.AutoRenew.ValueBool() {
-		svc := r.registrarFor(state.AccountID.ValueString(), state.UseSandbox.ValueBool())
+		svc := &registrarAdapter{client: r.client, accountID: state.AccountID.ValueString(), sandbox: state.UseSandbox.ValueBool()}
 		if err := svc.setAutoRenew(ctx, domain, false, domainUpdateTimeout); err != nil {
 			resp.Diagnostics.AddWarning(
 				"Failed to disable auto_renew",
@@ -364,12 +364,6 @@ func (r *cloudflareDomainResource) ImportState(ctx context.Context, req resource
 	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("account_id"), parts[0])...)
 	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("domain"), parts[1])...)
 	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("use_sandbox"), useSandbox)...)
-}
-
-// registrarFor builds the registrar service for one account: production
-// Registrar or Registrar Sandbox, per the resource use_sandbox attribute.
-func (r *cloudflareDomainResource) registrarFor(accountID string, useSandbox bool) *registrarAdapter {
-	return &registrarAdapter{client: r.client, accountID: accountID, sandbox: useSandbox}
 }
 
 // registrarAdapter talks to the Registrar API for one account: production
