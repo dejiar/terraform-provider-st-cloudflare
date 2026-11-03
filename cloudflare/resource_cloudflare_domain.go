@@ -76,6 +76,7 @@ type cloudflareDomainModel struct {
 type registrationView struct {
 	domainName string
 	autoRenew  bool
+	privacy    bool
 	expiresAt  string
 	status     string
 }
@@ -159,7 +160,7 @@ func (p *productionRegistrar) GetRegistration(ctx context.Context, domainName st
 	if err != nil {
 		return registrationView{}, err
 	}
-	return registrationOf(reg.DomainName, reg.AutoRenew, reg.ExpiresAt, string(reg.Status)), nil
+	return registrationOf(reg.DomainName, reg.AutoRenew, string(reg.PrivacyMode), reg.ExpiresAt, string(reg.Status)), nil
 }
 
 func (p *productionRegistrar) EditRegistration(ctx context.Context, domainName string, autoRenew bool) (workflowView, error) {
@@ -234,7 +235,7 @@ func (s *sandboxRegistrar) GetRegistration(ctx context.Context, domainName strin
 	if err != nil {
 		return registrationView{}, err
 	}
-	return registrationOf(reg.DomainName, reg.AutoRenew, reg.ExpiresAt, string(reg.Status)), nil
+	return registrationOf(reg.DomainName, reg.AutoRenew, string(reg.PrivacyMode), reg.ExpiresAt, string(reg.Status)), nil
 }
 
 func (s *sandboxRegistrar) EditRegistration(ctx context.Context, domainName string, autoRenew bool) (workflowView, error) {
@@ -455,7 +456,7 @@ func (r *cloudflareDomainResource) Create(ctx context.Context, req resource.Crea
 		Domain:            plan.Domain,
 		PurchaseYears:     plan.PurchaseYears,
 		AutoRenew:         plan.AutoRenew,
-		Privacy:           plan.Privacy,
+		Privacy:           types.BoolValue(registration.privacy),
 		RegistrantContact: plan.RegistrantContact,
 		DomainExpiryDate:  types.StringValue(registration.expiresAt),
 		Status:            types.StringValue(registration.status),
@@ -492,6 +493,7 @@ func (r *cloudflareDomainResource) Read(ctx context.Context, req resource.ReadRe
 	}
 
 	state.AutoRenew = types.BoolValue(registration.autoRenew)
+	state.Privacy = types.BoolValue(registration.privacy)
 	state.DomainExpiryDate = types.StringValue(registration.expiresAt)
 	state.Status = types.StringValue(registration.status)
 
@@ -599,17 +601,25 @@ func (r *cloudflareDomainResource) Delete(ctx context.Context, req resource.Dele
 }
 
 // ImportState expects the ID in the format <account_id>/<domain>.
+// Sandbox registrations use the format sandbox/<account_id>/<domain>.
 func (r *cloudflareDomainResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
-	parts := strings.SplitN(req.ID, "/", 2)
+	id := req.ID
+	useSandbox := false
+	if strings.HasPrefix(id, "sandbox/") {
+		useSandbox = true
+		id = strings.TrimPrefix(id, "sandbox/")
+	}
+	parts := strings.SplitN(id, "/", 2)
 	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
 		resp.Diagnostics.AddError(
 			"Invalid import ID",
-			fmt.Sprintf("Expected import ID in the format <account_id>/<domain>, got: %s", req.ID),
+			fmt.Sprintf("Expected import ID in the format <account_id>/<domain> (or sandbox/<account_id>/<domain> for Registrar Sandbox registrations), got: %s", req.ID),
 		)
 		return
 	}
 	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("account_id"), parts[0])...)
 	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("domain"), parts[1])...)
+	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("use_sandbox"), useSandbox)...)
 }
 
 // waitRegistrationWorkflow polls the registration status until the workflow
@@ -705,7 +715,7 @@ func sandboxPlaceholderContact() *registrantContactModel {
 	}
 }
 
-func registrationOf(domainName string, autoRenew bool, expiresAt time.Time, status string) registrationView {
+func registrationOf(domainName string, autoRenew bool, privacyMode string, expiresAt time.Time, status string) registrationView {
 	expiry := ""
 	if !expiresAt.IsZero() {
 		expiry = expiresAt.Format(time.RFC3339)
@@ -713,6 +723,7 @@ func registrationOf(domainName string, autoRenew bool, expiresAt time.Time, stat
 	return registrationView{
 		domainName: domainName,
 		autoRenew:  autoRenew,
+		privacy:    privacyMode == "redaction",
 		expiresAt:  expiry,
 		status:     status,
 	}
