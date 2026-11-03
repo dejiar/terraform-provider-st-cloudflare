@@ -71,4 +71,17 @@ Optional:
 - **Updates**: the Cloudflare Registrar API supports updating `auto_renew` only. Changing `purchase_years`, `privacy`, or `registrant_contact` after creation produces an explicit error.
 - **Delete**: domain registrations cannot be deleted in Cloudflare; `terraform destroy` only removes the resource from state and logs a warning. The domain stays registered — disable `auto_renew` to stop renewal charges.
 - **Sandbox**: `use_sandbox = true` registers against `/registrar-sandbox/` — no billing, no real domains, `.com`/`.net` only, and sandbox purchases are persisted (a name bought there is not re-buyable in the sandbox). The `st-cloudflare_zone_type` resource is unaffected: zone operations always run against the production Cloudflare API.
-- **Import**: `terraform import st-cloudflare_domain.example_domain <account_id>/<domain>` — the account ID is needed to locate the registration. Sandbox registrations use `terraform import st-cloudflare_domain.example_domain sandbox/<account_id>/<domain>`, since they live under the Registrar Sandbox endpoints.
+
+## Import
+
+Import is supported using the following syntax:
+
+```shell
+# Production registration:
+terraform import st-cloudflare_domain.example_domain <account_id>/<domain>
+
+# Registrar Sandbox registration:
+terraform import st-cloudflare_domain.example_domain sandbox/<account_id>/<domain>
+```
+
+The account ID is needed to locate the registration; sandbox registrations require the `sandbox/` prefix because they live under the Registrar Sandbox endpoints.
