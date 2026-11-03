@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/cenkalti/backoff/v4"
 	"github.com/cloudflare/cloudflare-go/v7"
 	"github.com/cloudflare/cloudflare-go/v7/registrar"
 	"github.com/cloudflare/cloudflare-go/v7/registrar_sandbox"
@@ -165,45 +166,18 @@ func (r *cloudflareDomainResource) Create(ctx context.Context, req resource.Crea
 
 	svc := &registrarAdapter{client: r.client, accountID: accountID, sandbox: useSandbox}
 
-	// The registrant contact comes from the account's address book; when
-	// the account has none, tell the user what to complete.
-	contactHint := ""
-	if !useSandbox {
-		contactHint = "; if the account has no default address book contact, complete it in the Cloudflare dashboard (Domain Registration → Registrant Contact)"
-	}
-
 	tflog.Info(ctx, fmt.Sprintf("Domain [%s] is registering...", domain))
 	createDomain := func() error {
 		return svc.createDomain(ctx, domain, autoRenew, privacy, years, maxPrice)
 	}
-	if err := retry(ctx, createDomain); err != nil {
-		// The purchase was rejected. When this account already holds the
-		// registration, importing it beats a confusing not-available error;
-		// otherwise let the unregistrable hint explain whose it is.
-		if state, gerr := domainStateOf(ctx, svc, plan); gerr == nil && state.Status.ValueString() != "" {
-			resp.Diagnostics.AddError(
-				fmt.Sprintf("register domain [%s] failed", domain),
-				fmt.Sprintf("%s\n\nThe domain is already registered under this account (status: %s); it was not adopted automatically. Import it into Terraform state instead.", err, state.Status.ValueString()),
-			)
-			return
-		}
-		resp.Diagnostics.Append(diagnosticErrorOf(err, "register domain [%s] failed%s%s", domain, contactHint, svc.unregistrableHint(ctx, domain)))
+	reconnectBackoff := backoff.NewExponentialBackOff()
+	reconnectBackoff.MaxElapsedTime = 30 * time.Second
+	err := backoff.Retry(createDomain, reconnectBackoff)
+	if err != nil {
+		resp.Diagnostics.Append(diagnosticErrorOf(err, "domain [%s] creation failed after retries", domain))
 		return
 	}
 	if err := svc.waitWorkflow(ctx, domain, domainRegistrationTimeout); err != nil {
-		var timeoutErr *workflowTimeoutError
-		if errors.As(err, &timeoutErr) {
-			// A timeout is ambiguous: the workflow may still complete
-			// server-side. Adopt the registration if it is already there,
-			// otherwise wait for the workflow to finish and import it.
-			if state, gerr := domainStateOf(ctx, svc, plan); gerr == nil && state.Status.ValueString() != "" {
-				tflog.Info(ctx, fmt.Sprintf("Domain [%s] completed after the workflow wait timed out (status: %s), adopting it", domain, state.Status.ValueString()))
-				resp.Diagnostics.Append(resp.State.Set(ctx, state)...)
-				return
-			}
-			resp.Diagnostics.Append(diagnosticErrorOf(err, "register domain [%s] failed%s; if the workflow completes later, import it instead of re-applying", domain, contactHint))
-			return
-		}
 		resp.Diagnostics.Append(diagnosticErrorOf(err, "register domain [%s] failed", domain))
 		return
 	}
@@ -519,7 +493,7 @@ func (a *registrarAdapter) waitWorkflow(ctx context.Context, domainName string, 
 			}
 		}
 		if time.Now().After(deadline) {
-			return &workflowTimeoutError{domain: domainName, state: state, errMsg: errMsg}
+			return fmt.Errorf("registration workflow for [%s] did not finish within %s (last state: %s)", domainName, timeout, state)
 		}
 		select {
 		case <-ctx.Done():
@@ -530,55 +504,6 @@ func (a *registrarAdapter) waitWorkflow(ctx context.Context, domainName string, 
 			interval *= 2
 		}
 	}
-}
-
-// unregistrableHint runs the registrar domain-check and returns an
-// explanation when the domain cannot be registered — e.g. it is already
-// registered at the registry, premium priced, or on an unsupported
-// extension. It returns an empty string when the domain is registrable or
-// the check cannot run; Cloudflare's own error message already explains
-// other failures.
-func (a *registrarAdapter) unregistrableHint(ctx context.Context, domainName string) string {
-	var registrable bool
-	var reason string
-	if a.sandbox {
-		resp, err := a.client.RegistrarSandbox.Check(ctx, registrar_sandbox.RegistrarSandboxCheckParams{
-			AccountID: cloudflare.F(a.accountID),
-			Domains:   cloudflare.F([]string{domainName}),
-		})
-		if err != nil {
-			return ""
-		}
-		for _, d := range resp.Domains {
-			if d.Name == domainName {
-				registrable, reason = d.Registrable, string(d.Reason)
-			}
-		}
-	} else {
-		resp, err := a.client.Registrar.Check(ctx, registrar.RegistrarCheckParams{
-			AccountID: cloudflare.F(a.accountID),
-			Domains:   cloudflare.F([]string{domainName}),
-		})
-		if err != nil {
-			return ""
-		}
-		for _, d := range resp.Domains {
-			if d.Name == domainName {
-				registrable, reason = d.Registrable, string(d.Reason)
-			}
-		}
-	}
-	switch {
-	case registrable:
-		return ""
-	case reason == "domain_unavailable":
-		return "; domain-check reports the domain as already registered, reserved, or otherwise taken at the registry — it cannot be purchased (transfer it in or choose another name)"
-	case reason == "domain_premium":
-		return "; domain-check reports the domain as premium priced, which the Registrar API cannot register"
-	case reason != "":
-		return fmt.Sprintf("; domain-check reports the domain as not registrable (%s)", reason)
-	}
-	return "; domain-check reports the domain as not registrable"
 }
 
 // ensurePriceWithin refuses the purchase when the current first-year
@@ -658,44 +583,9 @@ func domainStateOf(ctx context.Context, svc *registrarAdapter, plan *cloudflareD
 	return state, nil
 }
 
-// workflowTimeoutError marks a workflow wait that ran out of time; the
-// workflow itself may still complete server-side.
-type workflowTimeoutError struct {
-	domain string
-	state  string
-	errMsg string
-}
-
-func (e *workflowTimeoutError) Error() string {
-	msg := fmt.Sprintf("timed out waiting for registration workflow of [%s] (state=%s)", e.domain, e.state)
-	if e.errMsg != "" {
-		msg += ": " + e.errMsg
-	}
-	return msg
-}
-
 func privacyModeOf(privacy bool) string {
 	if privacy {
 		return "redaction"
 	}
 	return "off"
-}
-
-// retry retries a failed call with exponential backoff, capping the total
-// wait around 30s — the same behavior as the namecheap provider's
-// createDomain retry.
-func retry(ctx context.Context, f func() error) error {
-	err := f()
-	for delay := 500 * time.Millisecond; err != nil; delay *= 2 {
-		if delay > 16*time.Second {
-			return err
-		}
-		select {
-		case <-ctx.Done():
-			return err
-		case <-time.After(delay):
-		}
-		err = f()
-	}
-	return nil
 }
