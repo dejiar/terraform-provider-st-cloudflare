@@ -84,4 +84,4 @@ terraform import st-cloudflare_domain.example_domain <account_id>/<domain>
 terraform import st-cloudflare_domain.example_domain sandbox/<account_id>/<domain>
 ```
 
-The account ID is needed to locate the registration; sandbox registrations require the `sandbox/` prefix because they live under the Registrar Sandbox endpoints.
+The account ID is needed to locate the registration; sandbox registrations require the `sandbox/` prefix because they live under the Registrar Sandbox endpoints. Omit `purchase_years` in the configuration of imported resources: it cannot be recovered from the API and would otherwise show a permanent, non-appliable diff.
