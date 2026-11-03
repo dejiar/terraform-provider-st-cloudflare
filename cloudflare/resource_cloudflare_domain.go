@@ -54,11 +54,8 @@ type cloudflareDomainModel struct {
 	Status           types.String `tfsdk:"status"`
 }
 
-// registrarAdapter talks to the Registrar API: the production endpoints
-// (/accounts/{account_id}/registrar/*) or, when sandbox is set, the Registrar
-// Sandbox (/accounts/{account_id}/registrar-sandbox/*). Registrant contact is
-// never taken from configuration: production uses the account's address book
-// contact, the sandbox validates format only so a fixed placeholder is sent.
+// registrarAdapter talks to the Registrar API for one account: production
+// endpoints, or the Registrar Sandbox endpoints when sandbox is set.
 type registrarAdapter struct {
 	client    *cloudflare.Client
 	accountID string
