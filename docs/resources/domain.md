@@ -69,7 +69,7 @@ Optional:
 ## Notes
 
 - **Updates**: the Cloudflare Registrar API supports updating `auto_renew` only. Changing `purchase_years`, `privacy`, or `registrant_contact` after creation produces an explicit error.
-- **Delete**: domain registrations cannot be deleted in Cloudflare; `terraform destroy` only removes the resource from state and logs a warning. The domain stays registered — disable `auto_renew` to stop renewal charges.
+- **Delete**: domain registrations cannot be deleted in Cloudflare; `terraform destroy` only removes the resource from state and prints a warning. The domain stays registered — set `auto_renew = false` and apply before destroying to stop renewal charges.
 - **Sandbox**: `use_sandbox = true` registers against `/registrar-sandbox/` — no billing, no real domains, `.com`/`.net` only, and sandbox purchases are persisted (a name bought there is not re-buyable in the sandbox). The `st-cloudflare_zone_type` resource is unaffected: zone operations always run against the production Cloudflare API.
 
 ## Import
