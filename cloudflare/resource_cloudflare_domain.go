@@ -593,13 +593,11 @@ func (r *cloudflareDomainResource) Delete(ctx context.Context, req resource.Dele
 	}
 
 	// Since a domain registration can not be deleted in Cloudflare, we do
-	// nothing here but warn. The domain stays registered and auto_renew
-	// keeps applying until it is turned off.
+	// nothing here but give a warning. The domain stays registered and
+	// auto_renew keeps applying until it is turned off.
 	domain := state.Domain.ValueString()
-	resp.Diagnostics.AddWarning(
-		"Domain registration cannot be deleted",
-		fmt.Sprintf("Cloudflare Registrar has no delete API: [%s] remains registered with its current auto_renew setting. To stop renewal charges, set auto_renew = false and apply before destroying.", domain),
-	)
+	msg := fmt.Sprintf("Since a domain registration can not be deleted in Cloudflare, [%s] still exists actually. Disable auto_renew to stop renewal charges.", domain)
+	tflog.Warn(ctx, msg)
 }
 
 // ImportState expects the ID in the format <account_id>/<domain>.
