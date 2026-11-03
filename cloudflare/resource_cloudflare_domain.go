@@ -205,8 +205,8 @@ func (r *cloudflareDomainResource) Read(ctx context.Context, req resource.ReadRe
 	}
 
 	accountID := state.AccountID.ValueString()
-	svc := &registrarAdapter{client: r.client, accountID: accountID, sandbox: state.UseSandbox.ValueBool()}
 	domain := state.Domain.ValueString()
+	svc := &registrarAdapter{client: r.client, accountID: accountID, sandbox: state.UseSandbox.ValueBool()}
 	if err := svc.fillRegistration(ctx, domain, state); err != nil {
 		var apiErr *cloudflare.Error
 		if errors.As(err, &apiErr) && apiErr.StatusCode == 404 {
@@ -237,8 +237,8 @@ func (r *cloudflareDomainResource) Update(ctx context.Context, req resource.Upda
 	}
 
 	accountID := plan.AccountID.ValueString()
-	svc := &registrarAdapter{client: r.client, accountID: accountID, sandbox: plan.UseSandbox.ValueBool()}
 	domain := plan.Domain.ValueString()
+	svc := &registrarAdapter{client: r.client, accountID: accountID, sandbox: plan.UseSandbox.ValueBool()}
 
 	// The Registrar API supports updating auto_renew only; everything else is
 	// set at registration time and cannot be changed afterwards. purchase_years
