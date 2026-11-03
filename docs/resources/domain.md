@@ -34,7 +34,7 @@ The registrant contact is not part of the configuration: production registration
 - `account_id` (String) The Cloudflare account ID that owns the registration. Changing this registers the domain under a different account (forces replacement).
 - `auto_renew` (Boolean) Whether the domain is automatically renewed before expiration. Setting `true` authorizes Cloudflare to charge the account's default payment method up to 30 days before expiry.
 - `domain` (String) Domain name to register (FQDN, e.g. `example.com`).
-- `max_price` (Number) Maximum price for the purchase. The provider checks the current registrar price before buying — first year at the registration cost, each extra year at the renewal cost — and refuses to purchase when the total exceeds this value. The Registrar API has no server-side price cap, so the check runs client-side; if the price cannot be verified, the purchase is refused.
+- `max_price` (Number) Maximum price for the purchase. The provider checks the current first-year registrar price before buying and refuses to purchase when it exceeds this value. The Registrar API has no server-side price cap, so the check runs client-side; if the price cannot be verified, the purchase is refused.
 - `privacy` (Boolean) WHOIS privacy: `true` requests redaction, `false` disables it. Cannot be changed after registration.
 
 ### Optional
