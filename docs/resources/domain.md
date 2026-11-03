@@ -39,14 +39,12 @@ The registrant contact is not part of the configuration: production registration
 ### Optional
 
 - `purchase_years` (Number) Registration term in years (1-10). Defaults to the registry's minimum period (1 year for most extensions). Cannot be changed after registration.
-- `min_days_remaining` (Number) Renewal window threshold in days: `required_renew` becomes `true` when the domain expires within this many days. Defaults to `0` (only expired domains are flagged).
 - `use_sandbox` (Boolean) Register through the Registrar Sandbox endpoints instead of the production Registrar: free test registrations (`.com`/`.net` only), no billing, no real domains. Defaults to `false`. Changing it forces replacement.
 
 ### Read-Only
 
 - `domain_expiry_date` (String) The expiry date of the domain in ISO 8601 format (e.g. `2027-01-15T10:00:00Z`). Computed automatically from the registration.
 - `status` (String) Registration status, e.g. `active`, `expired`, `suspended`.
-- `required_renew` (Boolean) A boolean flag to keep track of whether domain renewal action is required.
 
 ## Notes
 
