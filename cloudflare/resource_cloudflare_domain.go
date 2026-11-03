@@ -177,8 +177,16 @@ func (r *cloudflareDomainResource) Create(ctx context.Context, req resource.Crea
 		return
 	}
 
-	state, err := domainStateOf(ctx, svc, plan)
-	if err != nil {
+	state := &cloudflareDomainModel{
+		AccountID:     plan.AccountID,
+		UseSandbox:    plan.UseSandbox,
+		Domain:        plan.Domain,
+		PurchaseYears: plan.PurchaseYears,
+		MaxPrice:      plan.MaxPrice,
+		AutoRenew:     plan.AutoRenew,
+		Privacy:       plan.Privacy,
+	}
+	if err := svc.fillRegistration(ctx, domain, state); err != nil {
 		resp.Diagnostics.Append(diagnosticErrorOf(err, "fetch registration for domain [%s] failed", domain))
 		return
 	}
@@ -261,8 +269,16 @@ func (r *cloudflareDomainResource) Update(ctx context.Context, req resource.Upda
 		}
 	}
 
-	newState, err := domainStateOf(ctx, svc, plan)
-	if err != nil {
+	newState := &cloudflareDomainModel{
+		AccountID:     plan.AccountID,
+		UseSandbox:    plan.UseSandbox,
+		Domain:        plan.Domain,
+		PurchaseYears: plan.PurchaseYears,
+		MaxPrice:      plan.MaxPrice,
+		AutoRenew:     plan.AutoRenew,
+		Privacy:       plan.Privacy,
+	}
+	if err := svc.fillRegistration(ctx, domain, newState); err != nil {
 		resp.Diagnostics.Append(diagnosticErrorOf(err, "fetch registration for domain [%s] failed", domain))
 		return
 	}
@@ -535,30 +551,6 @@ func (a *registrarAdapter) ensurePriceWithin(ctx context.Context, domainName str
 		return fmt.Errorf("registration price for domain [%s] is %.2f %s, which exceeds max_price %.2f; refusing to purchase", domainName, first, currency, maxPrice)
 	}
 	return nil
-}
-
-// domainStateOf builds the resource state from the plan plus the registration
-// the API reports. Plan values win for fields the API never returns or
-// refuses to change (purchase_years, privacy) so a managed resource always
-// converges on its configuration.
-func domainStateOf(ctx context.Context, svc *registrarAdapter, plan *cloudflareDomainModel) (*cloudflareDomainModel, error) {
-	state := &cloudflareDomainModel{
-		AccountID:     plan.AccountID,
-		UseSandbox:    plan.UseSandbox,
-		Domain:        plan.Domain,
-		PurchaseYears: plan.PurchaseYears,
-		MaxPrice:      plan.MaxPrice,
-		AutoRenew:     plan.AutoRenew,
-		Privacy:       plan.Privacy,
-	}
-	if err := svc.fillRegistration(ctx, plan.Domain.ValueString(), state); err != nil {
-		return nil, err
-	}
-	// The framework requires Create's state to match the plan for
-	// non-computed attributes; an adopted registration whose auto_renew
-	// differs converges through Update on the next apply.
-	state.AutoRenew = plan.AutoRenew
-	return state, nil
 }
 
 func privacyModeOf(privacy bool) string {
