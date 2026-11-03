@@ -441,45 +441,38 @@ func (a *registrarAdapter) getDomainInfo(ctx context.Context, domainName string)
 	return reg.AutoRenew, string(reg.PrivacyMode), reg.ExpiresAt.Format(time.RFC3339), nil
 }
 
-// workflowStatus fetches the current registration workflow status once.
-func (a *registrarAdapter) workflowStatus(ctx context.Context, domainName string) (state, errMsg string, err error) {
-	if a.sandbox {
-		ws, err := a.client.RegistrarSandbox.RegistrationStatus.Get(ctx, domainName, registrar_sandbox.RegistrationStatusGetParams{
-			AccountID: cloudflare.F(a.accountID),
-		})
-		if err != nil {
-			return "", "", err
-		}
-		return string(ws.State), ws.Error.Message, nil
-	}
-	ws, err := a.client.Registrar.RegistrationStatus.Get(ctx, domainName, registrar.RegistrationStatusGetParams{
-		AccountID: cloudflare.F(a.accountID),
-	})
-	if err != nil {
-		return "", "", err
-	}
-	return string(ws.State), ws.Error.Message, nil
-}
-
-// waitWorkflow polls the workflow status until it succeeds, reaches a state
-// that needs user action, or the timeout is exhausted.
+// waitWorkflow polls the registration workflow until it succeeds, reaches a
+// state that needs user action, or the timeout is exhausted. A failed status
+// fetch just leaves the previous state and tries again on the next tick.
 func (a *registrarAdapter) waitWorkflow(ctx context.Context, domainName string, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	interval := 2 * time.Second
 	var state, errMsg string
 	for {
-		if wState, wErrMsg, err := a.workflowStatus(ctx, domainName); err == nil {
-			state, errMsg = wState, wErrMsg
-			switch state {
-			case string(registrar.WorkflowStatusStateSucceeded):
-				return nil
-			case string(registrar.WorkflowStatusStateFailed), string(registrar.WorkflowStatusStateActionRequired), string(registrar.WorkflowStatusStateBlocked):
-				hint := ""
-				if state == string(registrar.WorkflowStatusStateBlocked) {
-					hint = " — a third party such as the registry or a losing registrar is holding the workflow; if it later resolves, import the registration instead of re-applying"
-				}
-				return fmt.Errorf("registration workflow for [%s] state=%s: %s%s", domainName, state, errMsg, hint)
+		if a.sandbox {
+			ws, err := a.client.RegistrarSandbox.RegistrationStatus.Get(ctx, domainName, registrar_sandbox.RegistrationStatusGetParams{
+				AccountID: cloudflare.F(a.accountID),
+			})
+			if err == nil {
+				state, errMsg = string(ws.State), ws.Error.Message
 			}
+		} else {
+			ws, err := a.client.Registrar.RegistrationStatus.Get(ctx, domainName, registrar.RegistrationStatusGetParams{
+				AccountID: cloudflare.F(a.accountID),
+			})
+			if err == nil {
+				state, errMsg = string(ws.State), ws.Error.Message
+			}
+		}
+		switch state {
+		case string(registrar.WorkflowStatusStateSucceeded):
+			return nil
+		case string(registrar.WorkflowStatusStateFailed), string(registrar.WorkflowStatusStateActionRequired), string(registrar.WorkflowStatusStateBlocked):
+			hint := ""
+			if state == string(registrar.WorkflowStatusStateBlocked) {
+				hint = " — a third party such as the registry or a losing registrar is holding the workflow; if it later resolves, import the registration instead of re-applying"
+			}
+			return fmt.Errorf("registration workflow for [%s] state=%s: %s%s", domainName, state, errMsg, hint)
 		}
 		if time.Now().After(deadline) {
 			return fmt.Errorf("registration workflow for [%s] did not finish within %s (last state: %s)", domainName, timeout, state)
