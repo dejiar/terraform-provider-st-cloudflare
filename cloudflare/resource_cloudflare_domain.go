@@ -186,7 +186,7 @@ func (r *cloudflareDomainResource) Create(ctx context.Context, req resource.Crea
 		AutoRenew:     plan.AutoRenew,
 		Privacy:       plan.Privacy,
 	}
-	if err := svc.fillRegistration(ctx, domain, state); err != nil {
+	if err := svc.readDomainInfo(ctx, domain, state); err != nil {
 		resp.Diagnostics.Append(diagnosticErrorOf(err, "fetch registration for domain [%s] failed", domain))
 		return
 	}
@@ -207,7 +207,7 @@ func (r *cloudflareDomainResource) Read(ctx context.Context, req resource.ReadRe
 	accountID := state.AccountID.ValueString()
 	domain := state.Domain.ValueString()
 	svc := &registrarAdapter{client: r.client, accountID: accountID, sandbox: state.UseSandbox.ValueBool()}
-	if err := svc.fillRegistration(ctx, domain, state); err != nil {
+	if err := svc.readDomainInfo(ctx, domain, state); err != nil {
 		var apiErr *cloudflare.Error
 		if errors.As(err, &apiErr) && apiErr.StatusCode == 404 {
 			resp.State.RemoveResource(ctx)
@@ -278,7 +278,7 @@ func (r *cloudflareDomainResource) Update(ctx context.Context, req resource.Upda
 		AutoRenew:     plan.AutoRenew,
 		Privacy:       plan.Privacy,
 	}
-	if err := svc.fillRegistration(ctx, domain, newState); err != nil {
+	if err := svc.readDomainInfo(ctx, domain, newState); err != nil {
 		resp.Diagnostics.Append(diagnosticErrorOf(err, "fetch registration for domain [%s] failed", domain))
 		return
 	}
@@ -409,11 +409,11 @@ func (a *registrarAdapter) setAutoRenew(ctx context.Context, domainName string, 
 	return a.waitWorkflow(ctx, domainName, timeout)
 }
 
-// fillRegistration copies the registration the API reports into the state's
+// readDomainInfo copies the registration the API reports into the state's
 // computed fields. Privacy is filled only when unknown (directly after an
 // import): it is chosen at purchase time and immutable, so a managed
 // resource always keeps the value from its configuration.
-func (a *registrarAdapter) fillRegistration(ctx context.Context, domainName string, state *cloudflareDomainModel) error {
+func (a *registrarAdapter) readDomainInfo(ctx context.Context, domainName string, state *cloudflareDomainModel) error {
 	var autoRenew bool
 	var privacyMode string
 	var expiresAt time.Time
