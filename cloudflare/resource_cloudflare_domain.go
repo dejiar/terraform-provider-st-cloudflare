@@ -374,8 +374,7 @@ type registrarAdapter struct {
 }
 
 // registerDomain purchases the domain (or simulates the purchase in the
-// sandbox), retrying transient failures, and waits for the workflow to
-// finish.
+// sandbox), retrying failures, and waits for the workflow to finish.
 func (a *registrarAdapter) registerDomain(ctx context.Context, domainName string, autoRenew, privacy bool, years int64) error {
 	if a.sandbox {
 		params := registrar_sandbox.RegistrationNewParams{
@@ -403,7 +402,7 @@ func (a *registrarAdapter) registerDomain(ctx context.Context, domainName string
 		if years > 0 {
 			params.Years = cloudflare.F(years)
 		}
-		ws, err := retryTransient(ctx, func() (*registrar_sandbox.RegistrationNewResponse, error) {
+		ws, err := retry(ctx, func() (*registrar_sandbox.RegistrationNewResponse, error) {
 			return a.client.RegistrarSandbox.Registrations.New(ctx, params)
 		})
 		if err != nil {
@@ -420,7 +419,7 @@ func (a *registrarAdapter) registerDomain(ctx context.Context, domainName string
 	if years > 0 {
 		params.Years = cloudflare.F(years)
 	}
-	ws, err := retryTransient(ctx, func() (*registrar.WorkflowStatus, error) {
+	ws, err := retry(ctx, func() (*registrar.WorkflowStatus, error) {
 		return a.client.Registrar.Registrations.New(ctx, params)
 	})
 	if err != nil {
@@ -708,14 +707,13 @@ func privacyModeOf(privacy bool) string {
 	return "off"
 }
 
-// retryTransient retries a call that failed transiently — rate limit,
-// server error, or transport fault — with exponential backoff, capping the
-// total wait around 30s like the namecheap provider's createDomain retry.
-// Permanent failures return immediately.
-func retryTransient[T any](ctx context.Context, f func() (T, error)) (T, error) {
+// retry retries a failed call with exponential backoff, capping the total
+// wait around 30s — the same behavior as the namecheap provider's
+// createDomain retry.
+func retry[T any](ctx context.Context, f func() (T, error)) (T, error) {
 	result, err := f()
 	for delay := 500 * time.Millisecond; err != nil; delay *= 2 {
-		if !isTransient(err) || delay > 16*time.Second {
+		if delay > 16*time.Second {
 			return result, err
 		}
 		select {
@@ -726,18 +724,4 @@ func retryTransient[T any](ctx context.Context, f func() (T, error)) (T, error) 
 		result, err = f()
 	}
 	return result, nil
-}
-
-// isTransient reports whether an API failure is worth retrying. Cloudflare's
-// 4xx answers are final (domain taken, missing contact, bad input), so only
-// rate limits, server errors, and transport-level faults retry.
-func isTransient(err error) bool {
-	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-		return false
-	}
-	var apiErr *cloudflare.Error
-	if errors.As(err, &apiErr) {
-		return apiErr.StatusCode == 429 || apiErr.StatusCode >= 500
-	}
-	return true
 }
