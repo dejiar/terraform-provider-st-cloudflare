@@ -74,18 +74,16 @@ type cloudflareDomainModel struct {
 // registrationView is the provider-agnostic view of a domain registration,
 // shared by the production and sandbox registrar services.
 type registrationView struct {
-	domainName string
-	autoRenew  bool
-	privacy    bool
-	expiresAt  string
-	status     string
+	autoRenew bool
+	privacy   bool
+	expiresAt string
+	status    string
 }
 
 // workflowView is the provider-agnostic view of an async registrar workflow.
 type workflowView struct {
 	completed bool
 	state     string
-	errCode   string
 	errMsg    string
 }
 
@@ -150,7 +148,7 @@ func (p *productionRegistrar) CreateRegistration(ctx context.Context, opts creat
 	if err != nil {
 		return workflowView{}, err
 	}
-	return workflowView{completed: ws.Completed, state: string(ws.State), errCode: ws.Error.Code, errMsg: ws.Error.Message}, nil
+	return workflowView{completed: ws.Completed, state: string(ws.State), errMsg: ws.Error.Message}, nil
 }
 
 func (p *productionRegistrar) GetRegistration(ctx context.Context, domainName string) (registrationView, error) {
@@ -160,7 +158,7 @@ func (p *productionRegistrar) GetRegistration(ctx context.Context, domainName st
 	if err != nil {
 		return registrationView{}, err
 	}
-	return registrationOf(reg.DomainName, reg.AutoRenew, string(reg.PrivacyMode), reg.ExpiresAt, string(reg.Status)), nil
+	return registrationOf(reg.AutoRenew, string(reg.PrivacyMode), reg.ExpiresAt, string(reg.Status)), nil
 }
 
 func (p *productionRegistrar) EditRegistration(ctx context.Context, domainName string, autoRenew bool) (workflowView, error) {
@@ -171,7 +169,7 @@ func (p *productionRegistrar) EditRegistration(ctx context.Context, domainName s
 	if err != nil {
 		return workflowView{}, err
 	}
-	return workflowView{completed: ws.Completed, state: string(ws.State), errCode: ws.Error.Code, errMsg: ws.Error.Message}, nil
+	return workflowView{completed: ws.Completed, state: string(ws.State), errMsg: ws.Error.Message}, nil
 }
 
 func (p *productionRegistrar) GetRegistrationStatus(ctx context.Context, domainName string) (workflowView, error) {
@@ -181,7 +179,7 @@ func (p *productionRegistrar) GetRegistrationStatus(ctx context.Context, domainN
 	if err != nil {
 		return workflowView{}, err
 	}
-	return workflowView{completed: ws.Completed, state: string(ws.State), errCode: ws.Error.Code, errMsg: ws.Error.Message}, nil
+	return workflowView{completed: ws.Completed, state: string(ws.State), errMsg: ws.Error.Message}, nil
 }
 
 // sandboxRegistrar talks to /accounts/{account_id}/registrar-sandbox/*.
@@ -225,7 +223,7 @@ func (s *sandboxRegistrar) CreateRegistration(ctx context.Context, opts createRe
 	if err != nil {
 		return workflowView{}, err
 	}
-	return workflowView{completed: ws.Completed, state: string(ws.State), errCode: ws.Error.Code, errMsg: ws.Error.Message}, nil
+	return workflowView{completed: ws.Completed, state: string(ws.State), errMsg: ws.Error.Message}, nil
 }
 
 func (s *sandboxRegistrar) GetRegistration(ctx context.Context, domainName string) (registrationView, error) {
@@ -235,7 +233,7 @@ func (s *sandboxRegistrar) GetRegistration(ctx context.Context, domainName strin
 	if err != nil {
 		return registrationView{}, err
 	}
-	return registrationOf(reg.DomainName, reg.AutoRenew, string(reg.PrivacyMode), reg.ExpiresAt, string(reg.Status)), nil
+	return registrationOf(reg.AutoRenew, string(reg.PrivacyMode), reg.ExpiresAt, string(reg.Status)), nil
 }
 
 func (s *sandboxRegistrar) EditRegistration(ctx context.Context, domainName string, autoRenew bool) (workflowView, error) {
@@ -246,7 +244,7 @@ func (s *sandboxRegistrar) EditRegistration(ctx context.Context, domainName stri
 	if err != nil {
 		return workflowView{}, err
 	}
-	return workflowView{completed: ws.Completed, state: string(ws.State), errCode: ws.Error.Code, errMsg: ws.Error.Message}, nil
+	return workflowView{completed: ws.Completed, state: string(ws.State), errMsg: ws.Error.Message}, nil
 }
 
 func (s *sandboxRegistrar) GetRegistrationStatus(ctx context.Context, domainName string) (workflowView, error) {
@@ -256,7 +254,7 @@ func (s *sandboxRegistrar) GetRegistrationStatus(ctx context.Context, domainName
 	if err != nil {
 		return workflowView{}, err
 	}
-	return workflowView{completed: ws.Completed, state: string(ws.State), errCode: ws.Error.Code, errMsg: ws.Error.Message}, nil
+	return workflowView{completed: ws.Completed, state: string(ws.State), errMsg: ws.Error.Message}, nil
 }
 
 // Metadata
@@ -398,11 +396,6 @@ func (r *cloudflareDomainResource) Create(ctx context.Context, req resource.Crea
 	d := req.Plan.Get(ctx, &plan)
 	resp.Diagnostics.Append(d...)
 	if resp.Diagnostics.HasError() {
-		return
-	}
-
-	if err := r.validateRegistrar(); err != nil {
-		resp.Diagnostics.Append(diagnosticErrorOf(err, "provider is not ready to register domains"))
 		return
 	}
 
@@ -609,7 +602,7 @@ func (r *cloudflareDomainResource) Delete(ctx context.Context, req resource.Dele
 			)
 		}
 	}
-	msg := fmt.Sprintf("Since a domain registration can not be deleted in Cloudflare, [%s] still exists actually. Disable auto_renew to stop renewal charges.", domain)
+	msg := fmt.Sprintf("Since a domain registration can not be deleted in Cloudflare, [%s] remains registered until its term ends.", domain)
 	tflog.Warn(ctx, msg)
 }
 
@@ -674,13 +667,6 @@ func waitRegistrationWorkflow(ctx context.Context, svc registrarService, domain 
 	}
 }
 
-func (r *cloudflareDomainResource) validateRegistrar() error {
-	if r.client == nil {
-		return fmt.Errorf("provider client is not configured")
-	}
-	return nil
-}
-
 // registrantContact is the plain-value form of the contact model shared by
 // the production and sandbox adapters.
 type registrantContact struct {
@@ -728,17 +714,16 @@ func sandboxPlaceholderContact() *registrantContactModel {
 	}
 }
 
-func registrationOf(domainName string, autoRenew bool, privacyMode string, expiresAt time.Time, status string) registrationView {
+func registrationOf(autoRenew bool, privacyMode string, expiresAt time.Time, status string) registrationView {
 	expiry := ""
 	if !expiresAt.IsZero() {
 		expiry = expiresAt.Format(time.RFC3339)
 	}
 	return registrationView{
-		domainName: domainName,
-		autoRenew:  autoRenew,
-		privacy:    privacyMode == "redaction",
-		expiresAt:  expiry,
-		status:     status,
+		autoRenew: autoRenew,
+		privacy:   privacyMode == "redaction",
+		expiresAt: expiry,
+		status:    status,
 	}
 }
 
