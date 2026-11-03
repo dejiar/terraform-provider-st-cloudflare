@@ -37,7 +37,7 @@ type cloudflareDomainResource struct {
 
 // registrarFor builds the registrar service for one account: production
 // Registrar or Registrar Sandbox, per the resource use_sandbox attribute.
-func (r *cloudflareDomainResource) registrarFor(accountID string, useSandbox bool) registrarService {
+func (r *cloudflareDomainResource) registrarFor(accountID string, useSandbox bool) *registrarAdapter {
 	return &registrarAdapter{client: r.client, accountID: accountID, sandbox: useSandbox}
 }
 
@@ -87,23 +87,13 @@ type workflowView struct {
 }
 
 // createRegistrationOptions carries the resource plan into the registrar
-// adapters.
+// adapter.
 type createRegistrationOptions struct {
 	domainName string
 	autoRenew  bool
 	privacy    bool
 	years      int64
 	contact    *registrantContactModel
-}
-
-// registrarService abstracts the production Registrar service and the
-// Registrar Sandbox service behind one shape so the resource code is
-// identical for both.
-type registrarService interface {
-	CreateRegistration(ctx context.Context, opts createRegistrationOptions) (workflowView, error)
-	GetRegistration(ctx context.Context, domainName string) (registrationView, error)
-	EditRegistration(ctx context.Context, domainName string, autoRenew bool) (workflowView, error)
-	GetRegistrationStatus(ctx context.Context, domainName string) (workflowView, error)
 }
 
 // registrarAdapter talks to the Registrar API: the production endpoints
@@ -436,11 +426,6 @@ func (r *cloudflareDomainResource) Create(ctx context.Context, req resource.Crea
 		return
 	}
 
-	importID := fmt.Sprintf("%s/%s", accountID, domain)
-	if plan.UseSandbox.ValueBool() {
-		importID = "sandbox/" + importID
-	}
-
 	workflow, err := svc.CreateRegistration(ctx, opts)
 	if err != nil {
 		resp.Diagnostics.Append(diagnosticErrorOf(err, "register domain [%s] failed%s", domain, contactHint))
@@ -450,6 +435,10 @@ func (r *cloudflareDomainResource) Create(ctx context.Context, req resource.Crea
 	if _, err := waitRegistrationWorkflow(ctx, svc, domain, workflow, domainRegistrationTimeout); err != nil {
 		var timeoutErr *workflowTimeoutError
 		if errors.As(err, &timeoutErr) {
+			importID := fmt.Sprintf("%s/%s", accountID, domain)
+			if plan.UseSandbox.ValueBool() {
+				importID = "sandbox/" + importID
+			}
 			// A timeout is ambiguous: the workflow may still complete
 			// server-side. Adopt the registration if it is already there,
 			// otherwise point at import so the next apply cannot collide
@@ -688,7 +677,7 @@ func (e *workflowTimeoutError) Error() string {
 // waitRegistrationWorkflow polls the registration status until the workflow
 // succeeds, reaches a state that needs user action, or the timeout is
 // exhausted.
-func waitRegistrationWorkflow(ctx context.Context, svc registrarService, domain string, workflow workflowView, timeout time.Duration) (workflowView, error) {
+func waitRegistrationWorkflow(ctx context.Context, svc *registrarAdapter, domain string, workflow workflowView, timeout time.Duration) (workflowView, error) {
 	if workflow.completed && workflow.state == string(registrar.WorkflowStatusStateSucceeded) {
 		return workflow, nil
 	}
