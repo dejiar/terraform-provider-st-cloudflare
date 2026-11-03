@@ -357,7 +357,7 @@ type registrarAdapter struct {
 // the domain (or simulates the purchase in the sandbox); retrying and
 // waiting for the workflow are the caller's job.
 func (a *registrarAdapter) createDomain(ctx context.Context, domainName string, autoRenew, privacy bool, years int64, maxPrice float64) error {
-	if err := a.ensurePriceWithin(ctx, domainName, maxPrice); err != nil {
+	if err := a.checkDomainPrice(ctx, domainName, maxPrice); err != nil {
 		return err
 	}
 	if a.sandbox {
@@ -430,7 +430,7 @@ func (a *registrarAdapter) getDomainInfo(ctx context.Context, domainName string)
 		if err != nil {
 			return false, "", "", err
 		}
-		return reg.AutoRenew, string(reg.PrivacyMode), formatExpiry(reg.ExpiresAt), nil
+		return reg.AutoRenew, string(reg.PrivacyMode), reg.ExpiresAt.Format(time.RFC3339), nil
 	}
 	reg, err := a.client.Registrar.Registrations.Get(ctx, domainName, registrar.RegistrationGetParams{
 		AccountID: cloudflare.F(a.accountID),
@@ -438,16 +438,7 @@ func (a *registrarAdapter) getDomainInfo(ctx context.Context, domainName string)
 	if err != nil {
 		return false, "", "", err
 	}
-	return reg.AutoRenew, string(reg.PrivacyMode), formatExpiry(reg.ExpiresAt), nil
-}
-
-// formatExpiry renders the API expiry time, with an empty string when the
-// API reports none.
-func formatExpiry(t time.Time) string {
-	if t.IsZero() {
-		return ""
-	}
-	return t.Format(time.RFC3339)
+	return reg.AutoRenew, string(reg.PrivacyMode), reg.ExpiresAt.Format(time.RFC3339), nil
 }
 
 // workflowStatus fetches the current registration workflow status once.
@@ -504,11 +495,11 @@ func (a *registrarAdapter) waitWorkflow(ctx context.Context, domainName string, 
 	}
 }
 
-// ensurePriceWithin refuses the purchase when the current first-year
+// checkDomainPrice refuses the purchase when the current first-year
 // registrar price exceeds maxPrice, like the namecheap provider's MaxPrice.
 // The Registrar API has no server-side price cap, so the check runs on the
 // domain-check pricing before purchasing.
-func (a *registrarAdapter) ensurePriceWithin(ctx context.Context, domainName string, maxPrice float64) error {
+func (a *registrarAdapter) checkDomainPrice(ctx context.Context, domainName string, maxPrice float64) error {
 	var registrable, priced bool
 	var currency, registrationCost string
 	if a.sandbox {
