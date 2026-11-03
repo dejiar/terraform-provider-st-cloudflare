@@ -43,7 +43,7 @@ func NewCloudflareDomainResource() resource.Resource {
 	return &cloudflareDomainResource{}
 }
 
-type cloudflareDomainState struct {
+type cloudflareDomainModel struct {
 	AccountID        types.String `tfsdk:"account_id"`
 	UseSandbox       types.Bool   `tfsdk:"use_sandbox"`
 	Domain           types.String `tfsdk:"domain"`
@@ -142,7 +142,7 @@ func (a *registrarAdapter) setAutoRenew(ctx context.Context, domainName string, 
 // computed fields. Privacy is filled only when unknown (directly after an
 // import): it is chosen at purchase time and immutable, so a managed
 // resource always keeps the value from its configuration.
-func (a *registrarAdapter) fillRegistration(ctx context.Context, domainName string, state *cloudflareDomainState) error {
+func (a *registrarAdapter) fillRegistration(ctx context.Context, domainName string, state *cloudflareDomainModel) error {
 	var autoRenew bool
 	var privacyMode string
 	var expiresAt time.Time
@@ -321,7 +321,7 @@ func (r *cloudflareDomainResource) Configure(_ context.Context, req resource.Con
 
 // Create
 func (r *cloudflareDomainResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
-	var plan *cloudflareDomainState
+	var plan *cloudflareDomainModel
 	d := req.Plan.Get(ctx, &plan)
 	resp.Diagnostics.Append(d...)
 	if resp.Diagnostics.HasError() {
@@ -392,8 +392,8 @@ func (r *cloudflareDomainResource) Create(ctx context.Context, req resource.Crea
 // the API reports. Plan values win for fields the API never returns or
 // refuses to change (purchase_years, privacy) so a managed resource always
 // converges on its configuration.
-func domainStateOf(ctx context.Context, svc *registrarAdapter, plan *cloudflareDomainState) (*cloudflareDomainState, error) {
-	state := &cloudflareDomainState{
+func domainStateOf(ctx context.Context, svc *registrarAdapter, plan *cloudflareDomainModel) (*cloudflareDomainModel, error) {
+	state := &cloudflareDomainModel{
 		AccountID:     plan.AccountID,
 		UseSandbox:    plan.UseSandbox,
 		Domain:        plan.Domain,
@@ -413,7 +413,7 @@ func domainStateOf(ctx context.Context, svc *registrarAdapter, plan *cloudflareD
 
 // Read
 func (r *cloudflareDomainResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
-	var state *cloudflareDomainState
+	var state *cloudflareDomainModel
 	d := req.State.Get(ctx, &state)
 	resp.Diagnostics.Append(d...)
 	if resp.Diagnostics.HasError() {
@@ -442,14 +442,14 @@ func (r *cloudflareDomainResource) Read(ctx context.Context, req resource.ReadRe
 
 // Update
 func (r *cloudflareDomainResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
-	var plan *cloudflareDomainState
+	var plan *cloudflareDomainModel
 	d := req.Plan.Get(ctx, &plan)
 	resp.Diagnostics.Append(d...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
 
-	var state *cloudflareDomainState
+	var state *cloudflareDomainModel
 	d = req.State.Get(ctx, &state)
 	resp.Diagnostics.Append(d...)
 	if resp.Diagnostics.HasError() {
@@ -489,7 +489,7 @@ func (r *cloudflareDomainResource) Update(ctx context.Context, req resource.Upda
 		}
 	}
 
-	newState := cloudflareDomainState{
+	newState := cloudflareDomainModel{
 		AccountID:     plan.AccountID,
 		UseSandbox:    plan.UseSandbox,
 		Domain:        plan.Domain,
@@ -510,7 +510,7 @@ func (r *cloudflareDomainResource) Update(ctx context.Context, req resource.Upda
 
 // Delete
 func (r *cloudflareDomainResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
-	var state *cloudflareDomainState
+	var state *cloudflareDomainModel
 	getStateDiags := req.State.Get(ctx, &state)
 	resp.Diagnostics.Append(getStateDiags...)
 	if resp.Diagnostics.HasError() {

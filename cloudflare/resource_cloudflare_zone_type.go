@@ -30,7 +30,7 @@ type zoneTypeResource struct {
 	client *cloudflare.Client
 }
 
-type zoneTypeResourceState struct {
+type zoneTypeResourceModel struct {
 	ZoneId          types.String `tfsdk:"zone_id"`
 	ZoneType        types.String `tfsdk:"zone_type"`
 	ZonePlan        types.String `tfsdk:"zone_plan"`
@@ -87,7 +87,7 @@ func (r *zoneTypeResource) Configure(ctx context.Context, req resource.Configure
 
 func (r *zoneTypeResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
 	// Retrieve values from plan
-	var plan *zoneTypeResourceState
+	var plan *zoneTypeResourceModel
 	planDiags := req.Plan.Get(ctx, &plan)
 	resp.Diagnostics.Append(planDiags...)
 	if resp.Diagnostics.HasError() {
@@ -100,7 +100,7 @@ func (r *zoneTypeResource) Create(ctx context.Context, req resource.CreateReques
 		return
 	}
 
-	state := zoneTypeResourceState{
+	state := zoneTypeResourceModel{
 		ZoneId:   plan.ZoneId,
 		ZoneType: plan.ZoneType,
 		ZonePlan: plan.ZonePlan,
@@ -118,7 +118,7 @@ func (r *zoneTypeResource) Create(ctx context.Context, req resource.CreateReques
 
 func (r *zoneTypeResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
 	// Get current state
-	var state *zoneTypeResourceState
+	var state *zoneTypeResourceModel
 	getStateDiags := req.State.Get(ctx, &state)
 	resp.Diagnostics.Append(getStateDiags...)
 	if resp.Diagnostics.HasError() {
@@ -144,14 +144,14 @@ func (r *zoneTypeResource) Read(ctx context.Context, req resource.ReadRequest, r
 
 func (r *zoneTypeResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
 	// Retrieve values from plan
-	var plan *zoneTypeResourceState
+	var plan *zoneTypeResourceModel
 	planDiags := req.Plan.Get(ctx, &plan)
 	resp.Diagnostics.Append(planDiags...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
 
-	state := zoneTypeResourceState{
+	state := zoneTypeResourceModel{
 		ZoneId:   plan.ZoneId,
 		ZoneType: plan.ZoneType,
 		ZonePlan: plan.ZonePlan,
@@ -174,7 +174,7 @@ func (r *zoneTypeResource) Update(ctx context.Context, req resource.UpdateReques
 }
 
 func (r *zoneTypeResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
-	var state *zoneTypeResourceState
+	var state *zoneTypeResourceModel
 	planDiags := req.State.Get(ctx, &state)
 	resp.Diagnostics.Append(planDiags...)
 	if resp.Diagnostics.HasError() {
