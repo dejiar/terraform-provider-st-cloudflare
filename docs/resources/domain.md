@@ -44,8 +44,7 @@ The registrant contact is not part of the configuration: production registration
 
 ### Read-Only
 
-- `domain_expiry_date` (String) The expiry date of the domain in ISO 8601 format (e.g. `2027-01-15T10:00:00Z`). Computed automatically from the registration.
-- `status` (String) Registration status, e.g. `active`, `expired`, `suspended`.
+- `domain_expiry_date` (String) The expiry date of the domain in ISO 8601 format (e.g. `2027-01-15T10:00:00Z`), computed from the registration.
 
 ## Notes
 

@@ -46,7 +46,6 @@ type cloudflareDomainModel struct {
 	AutoRenew        types.Bool    `tfsdk:"auto_renew"`
 	Privacy          types.Bool    `tfsdk:"privacy"`
 	DomainExpiryDate types.String  `tfsdk:"domain_expiry_date"`
-	Status           types.String  `tfsdk:"status"`
 }
 
 func NewCloudflareDomainResource() resource.Resource {
@@ -123,10 +122,6 @@ func (r *cloudflareDomainResource) Schema(_ context.Context, _ resource.SchemaRe
 				MarkdownDescription: "The expiry date of the domain in ISO 8601 format (e.g. `2027-01-15T10:00:00Z`). " +
 					"Computed automatically from the registration.",
 				Computed: true,
-			},
-			"status": &schema.StringAttribute{
-				MarkdownDescription: "Registration status, e.g. `active`, `expired`, `suspended`.",
-				Computed:            true,
 			},
 		},
 	}
@@ -421,7 +416,6 @@ func (a *registrarAdapter) fillRegistration(ctx context.Context, domainName stri
 	var autoRenew bool
 	var privacyMode string
 	var expiresAt time.Time
-	var status string
 	if a.sandbox {
 		reg, err := a.client.RegistrarSandbox.Registrations.Get(ctx, domainName, registrar_sandbox.RegistrationGetParams{
 			AccountID: cloudflare.F(a.accountID),
@@ -429,7 +423,7 @@ func (a *registrarAdapter) fillRegistration(ctx context.Context, domainName stri
 		if err != nil {
 			return err
 		}
-		autoRenew, privacyMode, expiresAt, status = reg.AutoRenew, string(reg.PrivacyMode), reg.ExpiresAt, string(reg.Status)
+		autoRenew, privacyMode, expiresAt = reg.AutoRenew, string(reg.PrivacyMode), reg.ExpiresAt
 	} else {
 		reg, err := a.client.Registrar.Registrations.Get(ctx, domainName, registrar.RegistrationGetParams{
 			AccountID: cloudflare.F(a.accountID),
@@ -437,7 +431,7 @@ func (a *registrarAdapter) fillRegistration(ctx context.Context, domainName stri
 		if err != nil {
 			return err
 		}
-		autoRenew, privacyMode, expiresAt, status = reg.AutoRenew, string(reg.PrivacyMode), reg.ExpiresAt, string(reg.Status)
+		autoRenew, privacyMode, expiresAt = reg.AutoRenew, string(reg.PrivacyMode), reg.ExpiresAt
 	}
 	state.AutoRenew = types.BoolValue(autoRenew)
 	if state.Privacy.IsNull() {
@@ -448,7 +442,6 @@ func (a *registrarAdapter) fillRegistration(ctx context.Context, domainName stri
 		expiry = expiresAt.Format(time.RFC3339)
 	}
 	state.DomainExpiryDate = types.StringValue(expiry)
-	state.Status = types.StringValue(status)
 	return nil
 }
 
