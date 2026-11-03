@@ -209,11 +209,7 @@ func (r *cloudflareDomainResource) Read(ctx context.Context, req resource.ReadRe
 		return
 	}
 
-	d1 := resp.State.Set(ctx, state)
-	resp.Diagnostics.Append(d1...)
-	if resp.Diagnostics.HasError() {
-		return
-	}
+	resp.Diagnostics.Append(resp.State.Set(ctx, state)...)
 }
 
 // Update
@@ -265,24 +261,13 @@ func (r *cloudflareDomainResource) Update(ctx context.Context, req resource.Upda
 		}
 	}
 
-	newState := cloudflareDomainModel{
-		AccountID:     plan.AccountID,
-		UseSandbox:    plan.UseSandbox,
-		Domain:        plan.Domain,
-		PurchaseYears: plan.PurchaseYears,
-		MaxPrice:      plan.MaxPrice,
-		Privacy:       plan.Privacy,
-	}
-	if err := svc.fillRegistration(ctx, domain, &newState); err != nil {
+	newState, err := domainStateOf(ctx, svc, plan)
+	if err != nil {
 		resp.Diagnostics.Append(diagnosticErrorOf(err, "fetch registration for domain [%s] failed", domain))
 		return
 	}
 
-	setStateDiags := resp.State.Set(ctx, &newState)
-	resp.Diagnostics.Append(setStateDiags...)
-	if resp.Diagnostics.HasError() {
-		return
-	}
+	resp.Diagnostics.Append(resp.State.Set(ctx, newState)...)
 }
 
 // Delete
@@ -446,23 +431,23 @@ func (a *registrarAdapter) fillRegistration(ctx context.Context, domainName stri
 }
 
 // workflowStatus fetches the current registration workflow status once.
-func (a *registrarAdapter) workflowStatus(ctx context.Context, domainName string) (completed bool, state, errMsg string, err error) {
+func (a *registrarAdapter) workflowStatus(ctx context.Context, domainName string) (state, errMsg string, err error) {
 	if a.sandbox {
 		ws, err := a.client.RegistrarSandbox.RegistrationStatus.Get(ctx, domainName, registrar_sandbox.RegistrationStatusGetParams{
 			AccountID: cloudflare.F(a.accountID),
 		})
 		if err != nil {
-			return false, "", "", err
+			return "", "", err
 		}
-		return ws.Completed, string(ws.State), ws.Error.Message, nil
+		return string(ws.State), ws.Error.Message, nil
 	}
 	ws, err := a.client.Registrar.RegistrationStatus.Get(ctx, domainName, registrar.RegistrationStatusGetParams{
 		AccountID: cloudflare.F(a.accountID),
 	})
 	if err != nil {
-		return false, "", "", err
+		return "", "", err
 	}
-	return ws.Completed, string(ws.State), ws.Error.Message, nil
+	return string(ws.State), ws.Error.Message, nil
 }
 
 // waitWorkflow polls the workflow status until it succeeds, reaches a state
@@ -472,7 +457,7 @@ func (a *registrarAdapter) waitWorkflow(ctx context.Context, domainName string, 
 	interval := 2 * time.Second
 	var state, errMsg string
 	for {
-		if _, wState, wErrMsg, err := a.workflowStatus(ctx, domainName); err == nil {
+		if wState, wErrMsg, err := a.workflowStatus(ctx, domainName); err == nil {
 			state, errMsg = wState, wErrMsg
 			switch state {
 			case string(registrar.WorkflowStatusStateSucceeded):
