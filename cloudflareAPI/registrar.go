@@ -99,7 +99,15 @@ func (a *Registrar) SetAutoRenew(ctx context.Context, domainName string, autoRen
 		if err != nil {
 			return err
 		}
-		return a.waitUpdateWorkflow(ctx, domainName, ws.Completed, string(ws.State), ws.Error.Message, timeout)
+		return a.pollWorkflow(ctx, domainName, ws.Completed, string(ws.State), ws.Error.Message, timeout, "update", func() (bool, string, string, error) {
+			ws, err := a.client.RegistrarSandbox.UpdateStatus.Get(ctx, domainName, registrar_sandbox.UpdateStatusGetParams{
+				AccountID: cloudflare.F(a.accountID),
+			})
+			if err != nil {
+				return false, "", "", err
+			}
+			return ws.Completed, string(ws.State), ws.Error.Message, nil
+		})
 	}
 	ws, err := a.client.Registrar.Registrations.Edit(ctx, domainName, registrar.RegistrationEditParams{
 		AccountID: cloudflare.F(a.accountID),
@@ -108,16 +116,28 @@ func (a *Registrar) SetAutoRenew(ctx context.Context, domainName string, autoRen
 	if err != nil {
 		return err
 	}
-	return a.waitUpdateWorkflow(ctx, domainName, ws.Completed, string(ws.State), ws.Error.Message, timeout)
+	return a.pollWorkflow(ctx, domainName, ws.Completed, string(ws.State), ws.Error.Message, timeout, "update", func() (bool, string, string, error) {
+		ws, err := a.client.Registrar.UpdateStatus.Get(ctx, domainName, registrar.UpdateStatusGetParams{
+			AccountID: cloudflare.F(a.accountID),
+		})
+		if err != nil {
+			return false, "", "", err
+		}
+		return ws.Completed, string(ws.State), ws.Error.Message, nil
+	})
 }
 
-// waitUpdateWorkflow polls the update workflow started by an auto_renew edit.
-// It seeds from the Edit response and then polls the update-status endpoint,
-// which tracks edit workflows. A failed status fetch just leaves the previous
-// state and tries again on the next tick.
-func (a *Registrar) waitUpdateWorkflow(ctx context.Context, domainName string, completed bool, state, errMsg string, timeout time.Duration) error {
+// pollWorkflow polls an async Registrar workflow until it reaches a terminal
+// state or the timeout expires. seed* carries the status the triggering call
+// already returned (an Edit response has one; a purchase does not) and fetch
+// polls the endpoint that tracks this workflow: registration-status for
+// purchases, update-status for edits. subject names the workflow in error
+// messages. A failed status fetch just leaves the previous state and tries
+// again on the next tick.
+func (a *Registrar) pollWorkflow(ctx context.Context, domainName string, seedCompleted bool, seedState, seedErrMsg string, timeout time.Duration, subject string, fetch func() (completed bool, state, errMsg string, err error)) error {
 	deadline := time.Now().Add(timeout)
 	interval := 2 * time.Second
+	completed, state, errMsg := seedCompleted, seedState, seedErrMsg
 	for {
 		switch state {
 		case string(registrar.WorkflowStatusStateSucceeded):
@@ -127,13 +147,13 @@ func (a *Registrar) waitUpdateWorkflow(ctx context.Context, domainName string, c
 			if state == string(registrar.WorkflowStatusStateBlocked) {
 				hint = " — a third party such as the registry or a losing registrar is holding the workflow; if it later resolves, import the registration instead of re-applying"
 			}
-			return fmt.Errorf("update workflow for [%s] state=%s: %s%s", domainName, state, errMsg, hint)
+			return fmt.Errorf("%s workflow for [%s] state=%s: %s%s", subject, domainName, state, errMsg, hint)
 		}
 		if completed {
-			return fmt.Errorf("update workflow for [%s] ended in state=%s: %s", domainName, state, errMsg)
+			return fmt.Errorf("%s workflow for [%s] ended in state=%s: %s", subject, domainName, state, errMsg)
 		}
 		if time.Now().After(deadline) {
-			return fmt.Errorf("update workflow for [%s] did not finish within %s (last state: %s)", domainName, timeout, state)
+			return fmt.Errorf("%s workflow for [%s] did not finish within %s (last state: %s)", subject, domainName, timeout, state)
 		}
 		select {
 		case <-ctx.Done():
@@ -143,20 +163,8 @@ func (a *Registrar) waitUpdateWorkflow(ctx context.Context, domainName string, c
 		if interval < 30*time.Second {
 			interval *= 2
 		}
-		if a.sandbox {
-			ws, err := a.client.RegistrarSandbox.UpdateStatus.Get(ctx, domainName, registrar_sandbox.UpdateStatusGetParams{
-				AccountID: cloudflare.F(a.accountID),
-			})
-			if err == nil {
-				completed, state, errMsg = ws.Completed, string(ws.State), ws.Error.Message
-			}
-		} else {
-			ws, err := a.client.Registrar.UpdateStatus.Get(ctx, domainName, registrar.UpdateStatusGetParams{
-				AccountID: cloudflare.F(a.accountID),
-			})
-			if err == nil {
-				completed, state, errMsg = ws.Completed, string(ws.State), ws.Error.Message
-			}
+		if c, s, e, err := fetch(); err == nil {
+			completed, state, errMsg = c, s, e
 		}
 	}
 }
@@ -187,56 +195,34 @@ func (a *Registrar) GetDomainInfo(ctx context.Context, domainName string) (autoR
 	return reg.AutoRenew, string(reg.PrivacyMode), reg.ExpiresAt.Format(time.RFC3339), nil
 }
 
-// waitWorkflow polls the registration workflow until it succeeds, reaches a
-// state that needs user action, or the timeout is exhausted. A failed status
-// fetch just leaves the previous state and tries again on the next tick.
+// waitWorkflow polls the registration (purchase) workflow until it succeeds,
+// reaches a state that needs user action, or the timeout is exhausted.
 func (a *Registrar) WaitWorkflow(ctx context.Context, domainName string, timeout time.Duration) error {
 	// The Registrar API is case-insensitive and normalizes names to
 	// lowercase; do the same on every call so domain-check responses
 	// match by name and GET/PATCH paths resolve.
 	domainName = strings.ToLower(domainName)
 
-	deadline := time.Now().Add(timeout)
-	interval := 2 * time.Second
-	var state, errMsg string
-	for {
-		if a.sandbox {
+	if a.sandbox {
+		return a.pollWorkflow(ctx, domainName, false, "", "", timeout, "registration", func() (bool, string, string, error) {
 			ws, err := a.client.RegistrarSandbox.RegistrationStatus.Get(ctx, domainName, registrar_sandbox.RegistrationStatusGetParams{
 				AccountID: cloudflare.F(a.accountID),
 			})
-			if err == nil {
-				state, errMsg = string(ws.State), ws.Error.Message
+			if err != nil {
+				return false, "", "", err
 			}
-		} else {
-			ws, err := a.client.Registrar.RegistrationStatus.Get(ctx, domainName, registrar.RegistrationStatusGetParams{
-				AccountID: cloudflare.F(a.accountID),
-			})
-			if err == nil {
-				state, errMsg = string(ws.State), ws.Error.Message
-			}
-		}
-		switch state {
-		case string(registrar.WorkflowStatusStateSucceeded):
-			return nil
-		case string(registrar.WorkflowStatusStateFailed), string(registrar.WorkflowStatusStateActionRequired), string(registrar.WorkflowStatusStateBlocked):
-			hint := ""
-			if state == string(registrar.WorkflowStatusStateBlocked) {
-				hint = " — a third party such as the registry or a losing registrar is holding the workflow; if it later resolves, import the registration instead of re-applying"
-			}
-			return fmt.Errorf("registration workflow for [%s] state=%s: %s%s", domainName, state, errMsg, hint)
-		}
-		if time.Now().After(deadline) {
-			return fmt.Errorf("registration workflow for [%s] did not finish within %s (last state: %s)", domainName, timeout, state)
-		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(interval):
-		}
-		if interval < 30*time.Second {
-			interval *= 2
-		}
+			return ws.Completed, string(ws.State), ws.Error.Message, nil
+		})
 	}
+	return a.pollWorkflow(ctx, domainName, false, "", "", timeout, "registration", func() (bool, string, string, error) {
+		ws, err := a.client.Registrar.RegistrationStatus.Get(ctx, domainName, registrar.RegistrationStatusGetParams{
+			AccountID: cloudflare.F(a.accountID),
+		})
+		if err != nil {
+			return false, "", "", err
+		}
+		return ws.Completed, string(ws.State), ws.Error.Message, nil
+	})
 }
 
 // checkDomainPrice refuses the purchase when the current first-year
