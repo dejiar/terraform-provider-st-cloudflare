@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"regexp"
+	"strings"
 	"testing"
 
 	"github.com/hashicorp/terraform-plugin-framework/providerserver"
@@ -125,6 +126,60 @@ func TestAccCloudflareDomainRenewalLifecycle(t *testing.T) {
 			// DELETE: destroy flips auto_renew back off.
 			{
 				Config: "# delete step: resource removed from config\n",
+			},
+		},
+	})
+}
+
+func testAccMixedCaseDomainResource(maxPrice float64) string {
+	return fmt.Sprintf(`
+resource "st-cloudflare_domain" "test" {
+  account_id     = %q
+  use_sandbox    = true
+  domain         = %q
+  purchase_years = 1
+  max_price      = %.1f
+  auto_renew     = false
+  privacy        = true
+}
+`, os.Getenv("CLOUDFLARE_ACCOUNT_ID"), strings.ToUpper(os.Getenv("CLOUDFLARE_DOMAIN_MIXED_TEST")), maxPrice)
+}
+
+// TestAccCloudflareDomainMixedCaseNormalization proves the provider lowercases
+// the domain at the API boundary: a mixed-case config still hits the
+// max_price guard (step 1), purchases cleanly (step 2, state keeps the
+// configured case), and survives a refresh without the 404 ghost (step 3).
+func TestAccCloudflareDomainMixedCaseNormalization(t *testing.T) {
+	if os.Getenv("CLOUDFLARE_DOMAIN_MIXED_TEST") == "" {
+		t.Skip("CLOUDFLARE_DOMAIN_MIXED_TEST must be set for the mixed-case test")
+	}
+	mixed := strings.ToUpper(os.Getenv("CLOUDFLARE_DOMAIN_MIXED_TEST"))
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { testAccPreCheck(t) },
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories(),
+		Steps: []resource.TestStep{
+			// max_price below the real price: must refuse even though the
+			// config domain is mixed-case (the old code skipped the check).
+			{
+				Config:      testAccMixedCaseDomainResource(1.0),
+				ExpectError: regexp.MustCompile(`exceeds\s+max_price`),
+			},
+			// Purchase with a sane cap: succeeds because the API calls are
+			// lowercased; state keeps the configured (mixed) case.
+			{
+				Config: testAccMixedCaseDomainResource(12.0),
+				Check: resource.ComposeTestCheckFunc(
+					resource.TestCheckResourceAttr("st-cloudflare_domain.test", "domain", mixed),
+					resource.TestCheckResourceAttrSet("st-cloudflare_domain.test", "domain_expiry_date"),
+				),
+			},
+			// Refresh: if the read 404'd on the mixed-case name, the plan
+			// would try to re-purchase and fail as already registered.
+			{
+				Config: testAccMixedCaseDomainResource(12.0),
+				Check: resource.ComposeTestCheckFunc(
+					resource.TestCheckResourceAttr("st-cloudflare_domain.test", "domain", mixed),
+				),
 			},
 		},
 	})

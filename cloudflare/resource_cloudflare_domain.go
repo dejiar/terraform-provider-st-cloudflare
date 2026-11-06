@@ -83,10 +83,10 @@ func (r *cloudflareDomainResource) Schema(_ context.Context, _ resource.SchemaRe
 				},
 			},
 			"domain": &schema.StringAttribute{
-				MarkdownDescription: "Domain name to register (FQDN, e.g. `example.com`).",
+				MarkdownDescription: "Domain name to register (FQDN, e.g. `example.com`). Case-insensitive; always sent to the API lowercase.",
 				Required:            true,
 				PlanModifiers: []planmodifier.String{
-					stringplanmodifier.RequiresReplace(),
+					requiresReplaceUnlessCaseMatch{},
 				},
 			},
 			"purchase_years": &schema.Int64Attribute{
@@ -340,6 +340,30 @@ func (r *cloudflareDomainResource) ImportState(ctx context.Context, req resource
 		return
 	}
 	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("account_id"), parts[0])...)
-	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("domain"), parts[1])...)
+	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("domain"), strings.ToLower(parts[1]))...)
 	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("use_sandbox"), useSandbox)...)
+}
+
+// requiresReplaceUnlessCaseMatch forces replacement when the domain changes,
+// comparing case-insensitively: the Registrar API normalizes names to
+// lowercase, so a case-only change (Example.com -> EXAMPLE.com) is the same
+// domain and must not trigger destroy + re-purchase (which would fail as
+// already registered).
+type requiresReplaceUnlessCaseMatch struct{}
+
+func (requiresReplaceUnlessCaseMatch) Description(_ context.Context) string {
+	return "Forces replacement when the domain name changes (case-insensitive)"
+}
+
+func (requiresReplaceUnlessCaseMatch) MarkdownDescription(_ context.Context) string {
+	return "Forces replacement when the domain name changes (case-insensitive)"
+}
+
+func (requiresReplaceUnlessCaseMatch) PlanModifyString(_ context.Context, req planmodifier.StringRequest, resp *planmodifier.StringResponse) {
+	if req.StateValue.IsNull() || req.PlanValue.IsNull() || req.PlanValue.IsUnknown() {
+		return
+	}
+	if !strings.EqualFold(req.PlanValue.ValueString(), req.StateValue.ValueString()) {
+		resp.RequiresReplace = true
+	}
 }

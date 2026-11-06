@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/cloudflare/cloudflare-go/v7"
@@ -30,6 +31,11 @@ type Registrar struct {
 // the domain (or simulates the purchase in the sandbox); retrying and
 // waiting for the workflow are the caller's job.
 func (a *Registrar) CreateDomain(ctx context.Context, domainName string, autoRenew, privacy bool, years int64, maxPrice float64) error {
+	// The Registrar API is case-insensitive and normalizes names to
+	// lowercase; do the same on every call so domain-check responses
+	// match by name and GET/PATCH paths resolve.
+	domainName = strings.ToLower(domainName)
+
 	if err := a.CheckDomainPrice(ctx, domainName, maxPrice); err != nil {
 		return err
 	}
@@ -80,6 +86,11 @@ func (a *Registrar) CreateDomain(ctx context.Context, domainName string, autoRen
 // endpoint tracks that workflow, so wait for it there — registration-status
 // only reflects the original purchase.
 func (a *Registrar) SetAutoRenew(ctx context.Context, domainName string, autoRenew bool, timeout time.Duration) error {
+	// The Registrar API is case-insensitive and normalizes names to
+	// lowercase; do the same on every call so domain-check responses
+	// match by name and GET/PATCH paths resolve.
+	domainName = strings.ToLower(domainName)
+
 	if a.sandbox {
 		ws, err := a.client.RegistrarSandbox.Registrations.Edit(ctx, domainName, registrar_sandbox.RegistrationEditParams{
 			AccountID: cloudflare.F(a.accountID),
@@ -153,6 +164,11 @@ func (a *Registrar) waitUpdateWorkflow(ctx context.Context, domainName string, c
 // getDomainInfo fetches the registration the API reports and returns its
 // auto_renew flag, privacy mode, and expiry date.
 func (a *Registrar) GetDomainInfo(ctx context.Context, domainName string) (autoRenew bool, privacy string, expiresAt string, err error) {
+	// The Registrar API is case-insensitive and normalizes names to
+	// lowercase; do the same on every call so domain-check responses
+	// match by name and GET/PATCH paths resolve.
+	domainName = strings.ToLower(domainName)
+
 	if a.sandbox {
 		reg, err := a.client.RegistrarSandbox.Registrations.Get(ctx, domainName, registrar_sandbox.RegistrationGetParams{
 			AccountID: cloudflare.F(a.accountID),
@@ -175,6 +191,11 @@ func (a *Registrar) GetDomainInfo(ctx context.Context, domainName string) (autoR
 // state that needs user action, or the timeout is exhausted. A failed status
 // fetch just leaves the previous state and tries again on the next tick.
 func (a *Registrar) WaitWorkflow(ctx context.Context, domainName string, timeout time.Duration) error {
+	// The Registrar API is case-insensitive and normalizes names to
+	// lowercase; do the same on every call so domain-check responses
+	// match by name and GET/PATCH paths resolve.
+	domainName = strings.ToLower(domainName)
+
 	deadline := time.Now().Add(timeout)
 	interval := 2 * time.Second
 	var state, errMsg string
@@ -223,6 +244,11 @@ func (a *Registrar) WaitWorkflow(ctx context.Context, domainName string, timeout
 // The Registrar API has no server-side price cap, so the check runs on the
 // domain-check pricing before purchasing.
 func (a *Registrar) CheckDomainPrice(ctx context.Context, domainName string, maxPrice float64) error {
+	// The Registrar API is case-insensitive and normalizes names to
+	// lowercase; do the same on every call so domain-check responses
+	// match by name and GET/PATCH paths resolve.
+	domainName = strings.ToLower(domainName)
+
 	var registrable, priced bool
 	var currency, registrationCost string
 	if a.sandbox {
