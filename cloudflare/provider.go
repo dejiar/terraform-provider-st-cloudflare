@@ -63,7 +63,8 @@ func (p *cloudflareProvider) Schema(_ context.Context, _ provider.SchemaRequest,
 				Description: "The API key for operations. May also be provided via CLOUDFLARE_API_KEY environment variable. " +
 					"API keys are now considered legacy by Cloudflare, API tokens should be used instead. " +
 					"Must provide only one of `api_key`, `api_token`.",
-				Optional: true,
+				Optional:  true,
+				Sensitive: true,
 				Validators: []validator.String{
 					stringvalidator.RegexMatches(
 						regexp.MustCompile(`[0-9a-f]{37}`),
@@ -77,7 +78,8 @@ func (p *cloudflareProvider) Schema(_ context.Context, _ provider.SchemaRequest,
 			"api_token": schema.StringAttribute{
 				Description: "The API Token for operations. May also be provided via CLOUDFLARE_API_TOKEN " +
 					"environment variable. Must provide only one of `api_key`, `api_token`.",
-				Optional: true,
+				Optional:  true,
+				Sensitive: true,
 				Validators: []validator.String{
 					stringvalidator.RegexMatches(
 						regexp.MustCompile(`^(cfat_)?[A-Za-z0-9_-]{40,}$`),
