@@ -83,7 +83,7 @@ func (r *cloudflareDomainResource) Schema(_ context.Context, _ resource.SchemaRe
 				},
 			},
 			"domain": &schema.StringAttribute{
-				MarkdownDescription: "Domain name to register (FQDN, e.g. `example.com`). Case-insensitive; always sent to the API lowercase.",
+				MarkdownDescription: "Domain name to register (FQDN, e.g. `example.com`).",
 				Required:            true,
 				PlanModifiers: []planmodifier.String{
 					requiresReplaceUnlessCaseMatch{},
