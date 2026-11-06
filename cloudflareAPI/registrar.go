@@ -36,7 +36,7 @@ func (a *Registrar) CreateDomain(ctx context.Context, domainName string, autoRen
 	// match by name and GET/PATCH paths resolve.
 	domainName = strings.ToLower(domainName)
 
-	if err := a.CheckDomainPrice(ctx, domainName, maxPrice); err != nil {
+	if err := a.CheckDomainPrice(ctx, domainName, years, maxPrice); err != nil {
 		return err
 	}
 	privacyMode := "off"
@@ -226,17 +226,19 @@ func (a *Registrar) WaitWorkflow(ctx context.Context, domainName string, timeout
 }
 
 // checkDomainPrice refuses the purchase when the current first-year
-// registrar price exceeds maxPrice.
-// The Registrar API has no server-side price cap, so the check runs on the
-// domain-check pricing before purchasing.
-func (a *Registrar) CheckDomainPrice(ctx context.Context, domainName string, maxPrice float64) error {
+// checkDomainPrice refuses the purchase when the total cost for the whole
+// term — first-year registration plus the renewal cost for every additional
+// year — exceeds max_price. The Registrar API has no server-side price cap,
+// so the check runs on the domain-check pricing (returned as strings; pricing
+// only appears for registrable domains).
+func (a *Registrar) CheckDomainPrice(ctx context.Context, domainName string, years int64, maxPrice float64) error {
 	// The Registrar API is case-insensitive and normalizes names to
 	// lowercase; do the same on every call so domain-check responses
 	// match by name and GET/PATCH paths resolve.
 	domainName = strings.ToLower(domainName)
 
 	var registrable, priced bool
-	var currency, registrationCost string
+	var currency, registrationCost, renewalCost string
 	if a.sandbox {
 		resp, err := a.client.RegistrarSandbox.Check(ctx, registrar_sandbox.RegistrarSandboxCheckParams{
 			AccountID: cloudflare.F(a.accountID),
@@ -248,7 +250,7 @@ func (a *Registrar) CheckDomainPrice(ctx context.Context, domainName string, max
 		for _, d := range resp.Domains {
 			if d.Name == domainName {
 				registrable, priced = d.Registrable, d.Pricing.RegistrationCost != ""
-				currency, registrationCost = d.Pricing.Currency, d.Pricing.RegistrationCost
+				currency, registrationCost, renewalCost = d.Pricing.Currency, d.Pricing.RegistrationCost, d.Pricing.RenewalCost
 			}
 		}
 	} else {
@@ -262,7 +264,7 @@ func (a *Registrar) CheckDomainPrice(ctx context.Context, domainName string, max
 		for _, d := range resp.Domains {
 			if d.Name == domainName {
 				registrable, priced = d.Registrable, d.Pricing.RegistrationCost != ""
-				currency, registrationCost = d.Pricing.Currency, d.Pricing.RegistrationCost
+				currency, registrationCost, renewalCost = d.Pricing.Currency, d.Pricing.RegistrationCost, d.Pricing.RenewalCost
 			}
 		}
 	}
@@ -277,7 +279,19 @@ func (a *Registrar) CheckDomainPrice(ctx context.Context, domainName string, max
 	if err != nil {
 		return fmt.Errorf("domain-check returned an unparseable registration cost %q for domain [%s]", registrationCost, domainName)
 	}
-	if first > maxPrice {
+	total, renewal := first, 0.0
+	if years > 1 {
+		renewal, err = strconv.ParseFloat(renewalCost, 64)
+		if err != nil {
+			return fmt.Errorf("domain-check returned an unparseable renewal cost %q for domain [%s]; refusing to purchase because max_price cannot be verified", renewalCost, domainName)
+		}
+		total += float64(years-1) * renewal
+	}
+	if total > maxPrice {
+		if years > 1 {
+			return fmt.Errorf("purchasing domain [%s] for %d years costs %.2f %s (%.2f registration + %d x %.2f renewal), which exceeds max_price %.2f; refusing to purchase",
+				domainName, years, total, currency, first, years-1, renewal, maxPrice)
+		}
 		return fmt.Errorf("registration price for domain [%s] is %.2f %s, which exceeds max_price %.2f; refusing to purchase", domainName, first, currency, maxPrice)
 	}
 	return nil

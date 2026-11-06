@@ -6,6 +6,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/hashicorp/terraform-plugin-framework/providerserver"
 	"github.com/hashicorp/terraform-plugin-go/tfprotov6"
@@ -180,6 +181,34 @@ func TestAccCloudflareDomainMixedCaseNormalization(t *testing.T) {
 				Check: resource.ComposeTestCheckFunc(
 					resource.TestCheckResourceAttr("st-cloudflare_domain.test", "domain", mixed),
 				),
+			},
+		},
+	})
+}
+
+// TestAccCloudflareDomainMultiYearPriceGuard proves max_price compares the
+// whole-term cost: 2 years at the sandbox .com price (registration + renewal)
+// total roughly double the first year, so a cap above the first-year price
+// alone must still refuse.
+func TestAccCloudflareDomainMultiYearPriceGuard(t *testing.T) {
+	domain := fmt.Sprintf("stcf-my-%06d.com", time.Now().UnixNano()%1000000)
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { testAccPreCheck(t) },
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories(),
+		Steps: []resource.TestStep{
+			{
+				Config: fmt.Sprintf(`
+resource "st-cloudflare_domain" "test" {
+  account_id     = %q
+  use_sandbox    = true
+  domain         = %q
+  purchase_years = 2
+  max_price      = 15.0
+  auto_renew     = false
+  privacy        = true
+}
+`, os.Getenv("CLOUDFLARE_ACCOUNT_ID"), domain),
+				ExpectError: regexp.MustCompile(`exceeds\s+max_price`),
 			},
 		},
 	})
