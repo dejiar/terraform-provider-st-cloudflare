@@ -75,26 +75,79 @@ func (a *Registrar) CreateDomain(ctx context.Context, domainName string, autoRen
 	return err
 }
 
-// setAutoRenew flips auto_renew and waits for the workflow to finish.
+// SetAutoRenew flips auto_renew and waits for the update workflow to finish.
+// The Edit response carries the initial workflow state; the update-status
+// endpoint tracks that workflow, so wait for it there — registration-status
+// only reflects the original purchase.
 func (a *Registrar) SetAutoRenew(ctx context.Context, domainName string, autoRenew bool, timeout time.Duration) error {
 	if a.sandbox {
-		_, err := a.client.RegistrarSandbox.Registrations.Edit(ctx, domainName, registrar_sandbox.RegistrationEditParams{
+		ws, err := a.client.RegistrarSandbox.Registrations.Edit(ctx, domainName, registrar_sandbox.RegistrationEditParams{
 			AccountID: cloudflare.F(a.accountID),
 			AutoRenew: cloudflare.F(autoRenew),
 		})
 		if err != nil {
 			return err
 		}
-		return a.WaitWorkflow(ctx, domainName, timeout)
+		return a.waitUpdateWorkflow(ctx, domainName, ws.Completed, string(ws.State), ws.Error.Message, timeout)
 	}
-	_, err := a.client.Registrar.Registrations.Edit(ctx, domainName, registrar.RegistrationEditParams{
+	ws, err := a.client.Registrar.Registrations.Edit(ctx, domainName, registrar.RegistrationEditParams{
 		AccountID: cloudflare.F(a.accountID),
 		AutoRenew: cloudflare.F(autoRenew),
 	})
 	if err != nil {
 		return err
 	}
-	return a.WaitWorkflow(ctx, domainName, timeout)
+	return a.waitUpdateWorkflow(ctx, domainName, ws.Completed, string(ws.State), ws.Error.Message, timeout)
+}
+
+// waitUpdateWorkflow polls the update workflow started by an auto_renew edit.
+// It seeds from the Edit response and then polls the update-status endpoint,
+// which tracks edit workflows. A failed status fetch just leaves the previous
+// state and tries again on the next tick.
+func (a *Registrar) waitUpdateWorkflow(ctx context.Context, domainName string, completed bool, state, errMsg string, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	interval := 2 * time.Second
+	for {
+		switch state {
+		case string(registrar.WorkflowStatusStateSucceeded):
+			return nil
+		case string(registrar.WorkflowStatusStateFailed), string(registrar.WorkflowStatusStateActionRequired), string(registrar.WorkflowStatusStateBlocked):
+			hint := ""
+			if state == string(registrar.WorkflowStatusStateBlocked) {
+				hint = " — a third party such as the registry or a losing registrar is holding the workflow; if it later resolves, import the registration instead of re-applying"
+			}
+			return fmt.Errorf("update workflow for [%s] state=%s: %s%s", domainName, state, errMsg, hint)
+		}
+		if completed {
+			return fmt.Errorf("update workflow for [%s] ended in state=%s: %s", domainName, state, errMsg)
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("update workflow for [%s] did not finish within %s (last state: %s)", domainName, timeout, state)
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(interval):
+		}
+		if interval < 30*time.Second {
+			interval *= 2
+		}
+		if a.sandbox {
+			ws, err := a.client.RegistrarSandbox.UpdateStatus.Get(ctx, domainName, registrar_sandbox.UpdateStatusGetParams{
+				AccountID: cloudflare.F(a.accountID),
+			})
+			if err == nil {
+				completed, state, errMsg = ws.Completed, string(ws.State), ws.Error.Message
+			}
+		} else {
+			ws, err := a.client.Registrar.UpdateStatus.Get(ctx, domainName, registrar.UpdateStatusGetParams{
+				AccountID: cloudflare.F(a.accountID),
+			})
+			if err == nil {
+				completed, state, errMsg = ws.Completed, string(ws.State), ws.Error.Message
+			}
+		}
+	}
 }
 
 // getDomainInfo fetches the registration the API reports and returns its

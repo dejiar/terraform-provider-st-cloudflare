@@ -63,12 +63,12 @@ func TestAccCloudflareDomainLifecycle(t *testing.T) {
 			// the create step (purchase_years and max_price are not part of
 			// the import ID and stay unset until a config refills them).
 			{
-				Config:                  testAccDomainResource(false),
-				ImportState:             true,
-				ImportStateId:           fmt.Sprintf("sandbox/%s/%s", os.Getenv("CLOUDFLARE_ACCOUNT_ID"), os.Getenv("CLOUDFLARE_DOMAIN_TEST")),
-				ResourceName:            "st-cloudflare_domain.test",
-				ImportStateVerify:       true,
-				ImportStateVerifyIgnore: []string{"purchase_years", "max_price"},
+				Config:                               testAccDomainResource(false),
+				ImportState:                          true,
+				ImportStateId:                        fmt.Sprintf("sandbox/%s/%s", os.Getenv("CLOUDFLARE_ACCOUNT_ID"), os.Getenv("CLOUDFLARE_DOMAIN_TEST")),
+				ResourceName:                         "st-cloudflare_domain.test",
+				ImportStateVerify:                    true,
+				ImportStateVerifyIgnore:              []string{"purchase_years", "max_price"},
 				ImportStateVerifyIdentifierAttribute: "domain",
 			},
 			// UPDATE: flip auto_renew on.
