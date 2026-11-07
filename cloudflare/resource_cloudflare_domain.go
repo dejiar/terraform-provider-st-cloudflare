@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 	"time"
 
@@ -160,9 +161,31 @@ func (r *cloudflareDomainResource) Create(ctx context.Context, req resource.Crea
 
 	svc := cloudflareapi.NewRegistrar(r.client, accountID, useSandbox)
 
+	// Pre-flight the price guard once: its refusals are deterministic, so it
+	// does not belong inside the retry loop.
+	if err := svc.CheckDomainPrice(ctx, domain, years, maxPrice); err != nil {
+		resp.Diagnostics.Append(diagnosticErrorOf(err, "domain [%s] creation failed", domain))
+		return
+	}
+
 	tflog.Info(ctx, fmt.Sprintf("Domain [%s] is registering...", domain))
 	createDomain := func() error {
-		return svc.CreateDomain(ctx, domain, autoRenew, privacy, years, maxPrice)
+		err := svc.CreateDomain(ctx, domain, autoRenew, privacy, years)
+		if err == nil {
+			return nil
+		}
+		// Deterministic failures never succeed on retry: 4xx API refusals
+		// (domain taken, premium, unsupported TLD, auth) come back identical
+		// every time, and a canceled context cannot recover. 429 and 5xx
+		// stay retryable.
+		var cfErr *cloudflare.Error
+		switch {
+		case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+			return backoff.Permanent(err)
+		case errors.As(err, &cfErr) && cfErr.StatusCode >= 400 && cfErr.StatusCode < 500 && cfErr.StatusCode != http.StatusTooManyRequests:
+			return backoff.Permanent(err)
+		}
+		return err
 	}
 	reconnectBackoff := backoff.NewExponentialBackOff()
 	reconnectBackoff.MaxElapsedTime = 30 * time.Second

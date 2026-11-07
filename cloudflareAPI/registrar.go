@@ -27,18 +27,15 @@ type Registrar struct {
 	sandbox   bool
 }
 
-// createDomain checks the first-year price against maxPrice and purchases
-// the domain (or simulates the purchase in the sandbox); retrying and
-// waiting for the workflow are the caller's job.
-func (a *Registrar) CreateDomain(ctx context.Context, domainName string, autoRenew, privacy bool, years int64, maxPrice float64) error {
+// createDomain purchases the domain (or simulates the purchase in the
+// sandbox); the price pre-flight, retrying and waiting for the workflow are
+// the caller's job.
+func (a *Registrar) CreateDomain(ctx context.Context, domainName string, autoRenew, privacy bool, years int64) error {
 	// The Registrar API is case-insensitive and normalizes names to
 	// lowercase; do the same on every call so domain-check responses
 	// match by name and GET/PATCH paths resolve.
 	domainName = strings.ToLower(domainName)
 
-	if err := a.CheckDomainPrice(ctx, domainName, years, maxPrice); err != nil {
-		return err
-	}
 	privacyMode := "off"
 	if privacy {
 		privacyMode = "redaction"
