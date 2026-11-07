@@ -19,21 +19,21 @@ func NewRegistrar(client *cloudflare.Client, accountID string, sandbox bool) *Re
 	return &Registrar{client: client, accountID: accountID, sandbox: sandbox}
 }
 
-// Registrar talks to the Registrar API for one account: production
-// endpoints, or the Registrar Sandbox endpoints when sandbox is set.
+// Registrar talks to the Registrar API for one account: production endpoints,
+// or the Registrar Sandbox endpoints when sandbox is set.
 type Registrar struct {
 	client    *cloudflare.Client
 	accountID string
 	sandbox   bool
 }
 
-// createDomain purchases the domain (or simulates the purchase in the
-// sandbox); the price pre-flight, retrying and waiting for the workflow are
-// the caller's job.
+// createDomain purchases the domain (or simulates the purchase in the sandbox);
+// the price pre-flight, retrying and waiting for the workflow are the caller's
+// job.
 func (a *Registrar) CreateDomain(ctx context.Context, domainName string, autoRenew, privacy bool, years int64) error {
-	// The Registrar API is case-insensitive and normalizes names to
-	// lowercase; do the same on every call so domain-check responses
-	// match by name and GET/PATCH paths resolve.
+	// The Registrar API is case-insensitive and normalizes names to lowercase; do
+	// the same on every call so domain-check responses match by name and GET/PATCH
+	// paths resolve.
 	domainName = strings.ToLower(domainName)
 
 	privacyMode := "off"
@@ -83,9 +83,9 @@ func (a *Registrar) CreateDomain(ctx context.Context, domainName string, autoRen
 // endpoint tracks that workflow, so wait for it there — registration-status
 // only reflects the original purchase.
 func (a *Registrar) SetAutoRenew(ctx context.Context, domainName string, autoRenew bool, timeout time.Duration) error {
-	// The Registrar API is case-insensitive and normalizes names to
-	// lowercase; do the same on every call so domain-check responses
-	// match by name and GET/PATCH paths resolve.
+	// The Registrar API is case-insensitive and normalizes names to lowercase; do
+	// the same on every call so domain-check responses match by name and GET/PATCH
+	// paths resolve.
 	domainName = strings.ToLower(domainName)
 
 	if a.sandbox {
@@ -169,9 +169,9 @@ func (a *Registrar) pollWorkflow(ctx context.Context, domainName string, seedCom
 // getDomainInfo fetches the registration the API reports and returns its
 // auto_renew flag, privacy mode, and expiry date.
 func (a *Registrar) GetDomainInfo(ctx context.Context, domainName string) (autoRenew bool, privacy string, expiresAt string, err error) {
-	// The Registrar API is case-insensitive and normalizes names to
-	// lowercase; do the same on every call so domain-check responses
-	// match by name and GET/PATCH paths resolve.
+	// The Registrar API is case-insensitive and normalizes names to lowercase; do
+	// the same on every call so domain-check responses match by name and GET/PATCH
+	// paths resolve.
 	domainName = strings.ToLower(domainName)
 
 	if a.sandbox {
@@ -195,9 +195,9 @@ func (a *Registrar) GetDomainInfo(ctx context.Context, domainName string) (autoR
 // waitWorkflow polls the registration (purchase) workflow until it succeeds,
 // reaches a state that needs user action, or the timeout is exhausted.
 func (a *Registrar) WaitWorkflow(ctx context.Context, domainName string, timeout time.Duration) error {
-	// The Registrar API is case-insensitive and normalizes names to
-	// lowercase; do the same on every call so domain-check responses
-	// match by name and GET/PATCH paths resolve.
+	// The Registrar API is case-insensitive and normalizes names to lowercase; do
+	// the same on every call so domain-check responses match by name and GET/PATCH
+	// paths resolve.
 	domainName = strings.ToLower(domainName)
 
 	if a.sandbox {
@@ -222,15 +222,15 @@ func (a *Registrar) WaitWorkflow(ctx context.Context, domainName string, timeout
 	})
 }
 
-// checkDomainPrice refuses the purchase when the total cost for the whole
-// term — first-year registration plus the renewal cost for every additional
-// year — exceeds max_price. The Registrar API has no server-side price cap,
-// so the check runs on the domain-check pricing (returned as strings; pricing
-// only appears for registrable domains).
+// checkDomainPrice refuses the purchase when the total cost for the whole term
+// — first-year registration plus the renewal cost for every additional year —
+// exceeds max_price. The Registrar API has no server-side price cap, so the
+// check runs on the domain-check pricing (returned as strings; pricing only
+// appears for registrable domains).
 func (a *Registrar) CheckDomainPrice(ctx context.Context, domainName string, years int64, maxPrice float64) error {
-	// The Registrar API is case-insensitive and normalizes names to
-	// lowercase; do the same on every call so domain-check responses
-	// match by name and GET/PATCH paths resolve.
+	// The Registrar API is case-insensitive and normalizes names to lowercase; do
+	// the same on every call so domain-check responses match by name and GET/PATCH
+	// paths resolve.
 	domainName = strings.ToLower(domainName)
 
 	var registrable, priced bool

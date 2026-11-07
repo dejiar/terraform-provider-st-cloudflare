@@ -127,8 +127,8 @@ func (r *cloudflareDomainResource) Schema(_ context.Context, _ resource.SchemaRe
 	}
 }
 
-// Configure stores the shared cloudflare-go client; account_id and
-// use_sandbox come from each resource instance.
+// Configure stores the shared cloudflare-go client; account_id and use_sandbox
+// come from each resource instance.
 func (r *cloudflareDomainResource) Configure(_ context.Context, req resource.ConfigureRequest, resp *resource.ConfigureResponse) {
 	if req.ProviderData == nil {
 		// this data available on apply stage
@@ -161,8 +161,8 @@ func (r *cloudflareDomainResource) Create(ctx context.Context, req resource.Crea
 
 	svc := cloudflareapi.NewRegistrar(r.client, accountID, useSandbox)
 
-	// Pre-flight the price guard once: its refusals are deterministic, so it
-	// does not belong inside the retry loop.
+	// Pre-flight the price guard once: its refusals are deterministic, so it does
+	// not belong inside the retry loop.
 	if err := svc.CheckDomainPrice(ctx, domain, years, maxPrice); err != nil {
 		resp.Diagnostics.Append(diagnosticErrorOf(err, "domain [%s] creation failed", domain))
 		return
@@ -174,10 +174,9 @@ func (r *cloudflareDomainResource) Create(ctx context.Context, req resource.Crea
 		if err == nil {
 			return nil
 		}
-		// Deterministic failures never succeed on retry: 4xx API refusals
-		// (domain taken, premium, unsupported TLD, auth) come back identical
-		// every time, and a canceled context cannot recover. 429 and 5xx
-		// stay retryable.
+		// Deterministic failures never succeed on retry: 4xx API refusals (domain
+		// taken, premium, unsupported TLD, auth) come back identical every time, and
+		// a canceled context cannot recover. 429 and 5xx stay retryable.
 		var cfErr *cloudflare.Error
 		switch {
 		case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
@@ -270,11 +269,11 @@ func (r *cloudflareDomainResource) Update(ctx context.Context, req resource.Upda
 	domain := plan.Domain.ValueString()
 	svc := cloudflareapi.NewRegistrar(r.client, accountID, plan.UseSandbox.ValueBool())
 
-	// The Registrar API supports updating auto_renew only; everything else is
-	// set at registration time and cannot be changed afterwards. purchase_years
-	// is never returned by the API, so a null on either side means
-	// "unknown/unmanaged" and the planned value is adopted rather than
-	// rejected as an update.
+	// The Registrar API supports updating auto_renew only; everything else is set
+	// at registration time and cannot be changed afterwards. purchase_years is
+	// never returned by the API, so a null on either side means
+	// "unknown/unmanaged" and the planned value is adopted rather than rejected as
+	// an update.
 	changed := []string{}
 	if !plan.PurchaseYears.Equal(state.PurchaseYears) && !plan.PurchaseYears.IsNull() && !state.PurchaseYears.IsNull() {
 		changed = append(changed, "purchase_years")
@@ -328,9 +327,9 @@ func (r *cloudflareDomainResource) Delete(ctx context.Context, req resource.Dele
 		return
 	}
 
-	// Since a domain registration can not be deleted in Cloudflare, the best
-	// we can do is stop it from renewing: when auto_renew is enabled, turn
-	// it off so the registration simply lapses at the end of its term.
+	// Since a domain registration can not be deleted in Cloudflare, the best we
+	// can do is stop it from renewing: when auto_renew is enabled, turn it off so
+	// the registration simply lapses at the end of its term.
 	domain := state.Domain.ValueString()
 	if state.AutoRenew.ValueBool() {
 		svc := cloudflareapi.NewRegistrar(r.client, state.AccountID.ValueString(), state.UseSandbox.ValueBool())
@@ -345,8 +344,8 @@ func (r *cloudflareDomainResource) Delete(ctx context.Context, req resource.Dele
 	tflog.Warn(ctx, msg)
 }
 
-// ImportState expects the ID in the format <account_id>/<domain>.
-// Sandbox registrations use the format sandbox/<account_id>/<domain>.
+// ImportState expects the ID in the format <account_id>/<domain>. Sandbox
+// registrations use the format sandbox/<account_id>/<domain>.
 func (r *cloudflareDomainResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
 	id := req.ID
 	useSandbox := false
