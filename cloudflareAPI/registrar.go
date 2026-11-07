@@ -279,20 +279,16 @@ func (a *Registrar) CheckDomainPrice(ctx context.Context, domainName string, yea
 	if err != nil {
 		return fmt.Errorf("domain-check returned an unparseable registration cost %q for domain [%s]", registrationCost, domainName)
 	}
-	total, renewal := first, 0.0
+	total := first
 	if years > 1 {
-		renewal, err = strconv.ParseFloat(renewalCost, 64)
+		renewal, err := strconv.ParseFloat(renewalCost, 64)
 		if err != nil {
 			return fmt.Errorf("domain-check returned an unparseable renewal cost %q for domain [%s]; refusing to purchase because max_price cannot be verified", renewalCost, domainName)
 		}
 		total += float64(years-1) * renewal
 	}
 	if total > maxPrice {
-		if years > 1 {
-			return fmt.Errorf("purchasing domain [%s] for %d years costs %.2f %s (%.2f registration + %d x %.2f renewal), which exceeds max_price %.2f; refusing to purchase",
-				domainName, years, total, currency, first, years-1, renewal, maxPrice)
-		}
-		return fmt.Errorf("registration price for domain [%s] is %.2f %s, which exceeds max_price %.2f; refusing to purchase", domainName, first, currency, maxPrice)
+		return fmt.Errorf("purchasing domain [%s] for %d year(s) costs %.2f %s, which exceeds max_price %.2f; refusing to purchase", domainName, years, total, currency, maxPrice)
 	}
 	return nil
 }
