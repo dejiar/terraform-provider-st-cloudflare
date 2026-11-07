@@ -222,7 +222,6 @@ func (a *Registrar) WaitWorkflow(ctx context.Context, domainName string, timeout
 	})
 }
 
-// checkDomainPrice refuses the purchase when the current first-year
 // checkDomainPrice refuses the purchase when the total cost for the whole
 // term — first-year registration plus the renewal cost for every additional
 // year — exceeds max_price. The Registrar API has no server-side price cap,
